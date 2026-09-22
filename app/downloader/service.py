@@ -50,21 +50,61 @@ def _base_opts() -> dict:
     }
 
 
+def _url_variants(url: str) -> list[str]:
+    """Return safe fallback URLs for share links with item-selection queries."""
+    variants = [url]
+    try:
+        from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
+
+        parts = urlsplit(url)
+        host = parts.netloc.lower().split(":")[0]
+        if host.startswith("www."):
+            host = host[4:]
+
+        # Instagram share links can contain img_index. A stale/out-of-range
+        # img_index can make the extractor fail even though the parent post is
+        # publicly available. Retry the canonical post URL without that selector.
+        if host == "instagram.com" or host.endswith(".instagram.com"):
+            query = parse_qs(parts.query, keep_blank_values=True)
+            query.pop("img_index", None)
+            query.pop("stkn", None)
+            canonical_query = urlencode(query, doseq=True)
+            canonical = urlunsplit(
+                (parts.scheme, parts.netloc, parts.path, canonical_query, "")
+            )
+            if canonical not in variants:
+                variants.append(canonical)
+    except Exception:
+        pass
+    return variants
+
+
 def _extract_info_sync(url: str) -> dict:
     opts = _base_opts()
-    opts["noplaylist"] = True
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+    last_error: Exception | None = None
 
-    # Image carousels may be represented as a playlist. Only retry the
-    # playlist form when the single-item extraction exposed no video formats.
-    if not _has_video_format(info):
-        entries = info.get("entries") or []
-        if not entries or len(entries) <= 1:
-            opts["noplaylist"] = False
+    for candidate in _url_variants(url):
+        try:
+            opts["noplaylist"] = True
             with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-    return info
+                info = ydl.extract_info(candidate, download=False)
+
+            # Image carousels may be represented as a playlist. Retry the
+            # playlist form when a single-item extraction exposes no video.
+            if not _has_video_format(info):
+                entries = info.get("entries") or []
+                if not entries or len(entries) <= 1:
+                    opts["noplaylist"] = False
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        info = ydl.extract_info(candidate, download=False)
+            return info
+        except Exception as exc:
+            last_error = exc
+            # A canonical Instagram retry is specifically intended for
+            # selector errors such as "Media number out of range".
+            continue
+
+    raise last_error or DownloadError("Unable to extract media.")
 
 
 def inspect_media(url: str) -> MediaInfo:
@@ -284,17 +324,34 @@ def _download_sync(
     before = set(Path(output_dir).glob("*"))
 
     try:
+        # Use the same URL fallback strategy during the actual download.
+        info = None
+        last_error: Exception | None = None
+        selected_url = url
+        for candidate in _url_variants(url):
+            try:
+                opts["noplaylist"] = True
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(candidate, download=False)
+                selected_url = candidate
+                break
+            except Exception as exc:
+                last_error = exc
+
+        if info is None:
+            raise DownloadError(str(last_error) if last_error else "Unable to extract media.")
+
+        if mode == "photo" or (mode != "audio" and not _has_video_format(info)):
+            if mode != "photo":
+                opts["noplaylist"] = False
+                with yt_dlp.YoutubeDL(opts) as image_ydl:
+                    info = image_ydl.extract_info(selected_url, download=False)
+            notify(0, "fetching highest-resolution photo…")
+            return _download_images(info, output_dir, notify)
+
+        # The extractor result was obtained from the selected URL, so process
+        # that exact info object instead of re-extracting the original URL.
         with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-
-            if mode == "photo" or (mode != "audio" and not _has_video_format(info)):
-                if mode != "photo":
-                    opts["noplaylist"] = False
-                    with yt_dlp.YoutubeDL(opts) as image_ydl:
-                        info = image_ydl.extract_info(url, download=False)
-                notify(0, "fetching highest-resolution photo…")
-                return _download_images(info, output_dir, notify)
-
             ydl.process_info(info)
 
             expected = Path(ydl.prepare_filename(info))
