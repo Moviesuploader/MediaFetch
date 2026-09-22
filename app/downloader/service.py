@@ -59,31 +59,67 @@ def _base_opts() -> dict:
 
 
 def _url_variants(url: str) -> list[str]:
-    """Return safe fallback URLs for share links with item-selection queries."""
+    """Return conservative canonical/alternate URLs for supported platforms.
+
+    These are only URL-shape fallbacks. They do not bypass authentication,
+    private posts, DRM, or other access controls.
+    """
     variants = [url]
+
     try:
         from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
         parts = urlsplit(url)
-        host = parts.netloc.lower().split(":")[0]
-        if host.startswith("www."):
-            host = host[4:]
+        raw_host = parts.netloc.lower().split(":")[0]
+        host = raw_host[4:] if raw_host.startswith("www.") else raw_host
+        path = parts.path or "/"
 
-        # Instagram share links can contain img_index. A stale/out-of-range
-        # img_index can make the extractor fail even though the parent post is
-        # publicly available. Retry the canonical post URL without that selector.
+        def add_variant(new_host: str, new_path: str | None = None, query: dict | None = None) -> None:
+            candidate = urlunsplit(
+                (
+                    parts.scheme or "https",
+                    new_host,
+                    new_path or path,
+                    urlencode(query, doseq=True) if query is not None else parts.query,
+                    "",
+                )
+            )
+            if candidate not in variants:
+                variants.append(candidate)
+
+        # Instagram share links can contain item selectors that become stale.
         if host == "instagram.com" or host.endswith(".instagram.com"):
             query = parse_qs(parts.query, keep_blank_values=True)
             query.pop("img_index", None)
             query.pop("stkn", None)
-            canonical_query = urlencode(query, doseq=True)
-            canonical = urlunsplit(
-                (parts.scheme, parts.netloc, parts.path, canonical_query, "")
-            )
-            if canonical not in variants:
-                variants.append(canonical)
+            add_variant(raw_host, query=query)
+
+        # Facebook sometimes serves a different response shape from the
+        # mobile host. Retry the same public URL on m.facebook.com.
+        elif host == "facebook.com" or host.endswith(".facebook.com"):
+            if raw_host != "m.facebook.com":
+                add_variant("m.facebook.com")
+
+        # X/Twitter has several legacy/mobile hostnames. Keep the canonical
+        # x.com form as a second attempt.
+        elif host in {"twitter.com", "mobile.twitter.com", "m.twitter.com", "x.com", "mobile.x.com"}:
+            if raw_host != "x.com":
+                add_variant("x.com")
+
+        # Reddit's old/new/mobile frontends can return different HTML/API
+        # responses. Retry through the normal www host.
+        elif host in {"old.reddit.com", "new.reddit.com", "m.reddit.com", "reddit.com"}:
+            if raw_host != "www.reddit.com":
+                add_variant("www.reddit.com")
+
+        # Threads has both threads.net and threads.com hostnames. Keep the
+        # current canonical threads.net form as a fallback.
+        elif host == "threads.com":
+            add_variant("www.threads.net")
+
     except Exception:
         pass
+
     return variants
 
 
