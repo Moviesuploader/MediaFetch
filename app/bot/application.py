@@ -29,7 +29,14 @@ def build_application() -> Application:
     if not settings.bot_token:
         raise RuntimeError("BOT_TOKEN is required to start MediaFetch.")
 
-    application = Application.builder().token(settings.bot_token).build()
+    # Webhook updates must not queue behind a slow yt-dlp extraction.
+    # The downloader itself is still protected by MAX_CONCURRENT_DOWNLOADS.
+    application = (
+        Application.builder()
+        .token(settings.bot_token)
+        .concurrent_updates(8)
+        .build()
+    )
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("about", about))
