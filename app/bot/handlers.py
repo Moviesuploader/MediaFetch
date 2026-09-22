@@ -7,6 +7,7 @@ from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
 from app.core.config import settings
+from app.core.rate_limit import UserRateLimiter
 from app.downloader.detector import detect_platform
 from app.downloader.service import DownloadError, download_media
 
@@ -14,6 +15,7 @@ URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 _ACTIVE_USERS: set[int] = set()
 _ACTIVE_LOCK = asyncio.Lock()
 _DOWNLOAD_SLOTS = asyncio.Semaphore(settings.max_concurrent_downloads)
+_RATE_LIMITER = UserRateLimiter(min_interval=3.0)
 
 SUPPORTED_TEXT = (
     "YouTube • Instagram • Facebook • Reddit • X/Twitter • "
@@ -86,6 +88,13 @@ def _quality_keyboard() -> InlineKeyboardMarkup:
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
+        return
+
+    user_id = update.effective_user.id if update.effective_user else update.message.chat_id
+    if not await _RATE_LIMITER.allow(user_id):
+        await update.message.reply_text(
+            "⏱️ Please wait a few seconds before sending another link."
+        )
         return
 
     match = URL_RE.search(update.message.text)
