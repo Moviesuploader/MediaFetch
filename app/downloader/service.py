@@ -185,7 +185,17 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
                         with yt_dlp.YoutubeDL(playlist_opts) as ydl:
                             info = ydl.extract_info(candidate, download=False)
                         opts = playlist_opts
-                return info, candidate, opts
+
+                # Do not stop on a metadata-only result. This is what lets the
+                # generic OpenGraph/direct-media fallback run when a site's
+                # dedicated extractor returns a shell page with no formats.
+                if (
+                    _has_video_format(info)
+                    or _best_thumbnail(info)
+                    or _image_entries(info)
+                ):
+                    return info, candidate, opts
+                raise DownloadError("Extractor returned no media formats or images.")
             except Exception as exc:
                 last_error = exc
 
