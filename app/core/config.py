@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     admin_ids: str = ""
     free_daily_limit: int = 10
     premium_daily_limit: int = 100
-    premium_max_file_mb: int = 200
+    premium_max_file_mb: int = 50
     cache_ttl_days: int = 7
     max_carousel_items: int = 10
 
