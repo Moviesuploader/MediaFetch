@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import asyncio
+import hashlib
 import re
 from pathlib import Path
 
@@ -8,8 +11,9 @@ from telegram.ext import ContextTypes
 
 from app.core.config import settings
 from app.core.rate_limit import UserRateLimiter
+from app.core.storage import storage
 from app.downloader.detector import detect_platform
-from app.downloader.service import DownloadError, download_media
+from app.downloader.service import DownloadError, MediaInfo, download_media, get_media_info
 
 URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 _ACTIVE_USERS: set[int] = set()
@@ -23,12 +27,47 @@ SUPPORTED_TEXT = (
 )
 
 
+def _cache_key(url: str, mode: str) -> str:
+    return hashlib.sha256(f"{url}|{mode}".encode("utf-8")).hexdigest()
+
+
+def _limit_for(user_id: int) -> int:
+    return settings.premium_daily_limit if storage.is_premium(user_id) else settings.free_daily_limit
+
+
+def _quality_keyboard(info: MediaInfo) -> InlineKeyboardMarkup:
+    if info.is_photo:
+        rows = [[InlineKeyboardButton("📸 HD / Original", callback_data="mf:photo")]]
+    else:
+        rows = [[
+            InlineKeyboardButton("🎬 Best", callback_data="mf:best"),
+            InlineKeyboardButton("🎵 MP3", callback_data="mf:audio"),
+        ]]
+        max_height = max(info.heights, default=0)
+        standards = [2160, 1440, 1080, 720, 480, 360]
+        available = [height for height in standards if height <= max_height]
+        for index in range(0, len(available), 2):
+            rows.append([
+                InlineKeyboardButton(
+                    f"📺 {height}p",
+                    callback_data=f"mf:{height}p",
+                )
+                for height in available[index:index + 2]
+            ])
+    rows.append([InlineKeyboardButton("❌ Cancel", callback_data="mf:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
+    user = update.effective_user
+    if user:
+        await asyncio.to_thread(storage.touch_user, user.id, user.username)
     await update.message.reply_text(
         "👋 <b>Welcome to MediaFetch!</b>\n\n"
-        "Send me a public media URL and I’ll try to download it.\n\n"
+        "Send a public media URL and choose the quality.\n"
+        "🎬 Video • 🎵 MP3 • 📸 HD photos • 🖼️ carousels\n\n"
         "Use /help for commands.",
         parse_mode="HTML",
     )
@@ -40,10 +79,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(
         "🛠 <b>MediaFetch Help</b>\n\n"
         "1️⃣ Send a public media URL.\n"
-        "2️⃣ Choose the quality or audio mode.\n"
-        "3️⃣ I download the media.\n"
-        "4️⃣ I send the file back here.\n\n"
-        "Commands: /start /help /supported /about",
+        "2️⃣ I inspect the available media and qualities.\n"
+        "3️⃣ Choose a quality.\n"
+        "4️⃣ I download and send it back.\n\n"
+        "Commands: /start /help /supported /about /premium",
         parse_mode="HTML",
     )
 
@@ -52,8 +91,8 @@ async def supported(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
     await update.message.reply_text(
-        f"🌐 <b>Detected platforms</b>\n\n{SUPPORTED_TEXT}\n\n"
-        "Actual download support depends on yt-dlp and the platform.",
+        f"🌐 <b>Supported platforms</b>\n\n{SUPPORTED_TEXT}\n\n"
+        "Actual availability depends on the source and yt-dlp.",
         parse_mode="HTML",
     )
 
@@ -63,27 +102,33 @@ async def about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await update.message.reply_text(
         "⚡ <b>MediaFetch</b>\n\n"
-        "A modular media downloader built with Python, Telegram Bot API, "
-        "FastAPI, yt-dlp and FFmpeg.\n\n"
+        "Universal public-media downloader powered by yt-dlp + FFmpeg.\n"
+        "Includes quality selection, HD photo support, caching, limits and admin tools.\n\n"
         "Only download content you are authorized to download.",
         parse_mode="HTML",
     )
 
 
-def _quality_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("🎬 Best", callback_data="mf:best"),
-                InlineKeyboardButton("📺 720p", callback_data="mf:720p"),
-            ],
-            [
-                InlineKeyboardButton("📱 480p", callback_data="mf:480p"),
-                InlineKeyboardButton("🎵 MP3", callback_data="mf:audio"),
-            ],
-            [InlineKeyboardButton("❌ Cancel", callback_data="mf:cancel")],
-        ]
-    )
+async def premium_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    user_id = update.effective_user.id if update.effective_user else update.message.chat_id
+    until = await asyncio.to_thread(storage.premium_until, user_id)
+    if until > __import__("time").time():
+        from datetime import datetime, timezone
+        date = datetime.fromtimestamp(until, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        await update.message.reply_text(
+            f"💎 <b>Premium active</b>\nUntil: <b>{date}</b>\n"
+            f"Daily limit: <b>{settings.premium_daily_limit}</b>",
+            parse_mode="HTML",
+        )
+    else:
+        used = await asyncio.to_thread(storage.usage_today, user_id)
+        await update.message.reply_text(
+            f"🆓 <b>Free plan</b>\nToday: {used}/{settings.free_daily_limit} downloads.\n"
+            "Premium access is currently managed by the bot admin.",
+            parse_mode="HTML",
+        )
 
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -91,87 +136,153 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     user_id = update.effective_user.id if update.effective_user else update.message.chat_id
+    username = update.effective_user.username if update.effective_user else None
+    await asyncio.to_thread(storage.touch_user, user_id, username)
+
+    if await asyncio.to_thread(storage.maintenance) and user_id not in settings.admin_id_set:
+        await update.message.reply_text("🔧 MediaFetch is temporarily under maintenance. Please try again later.")
+        return
+
     if not await _RATE_LIMITER.allow(user_id):
-        await update.message.reply_text(
-            "⏱️ Please wait a few seconds before sending another link."
-        )
+        await update.message.reply_text("⏱️ Please wait a few seconds before sending another link.")
         return
 
     match = URL_RE.search(update.message.text)
     if not match:
         await update.message.reply_text(
-            "🔗 Send a valid public http/https media URL.\n"
-            "Try /supported to see detected platforms."
+            "🔗 Send a valid public http/https media URL.\nTry /supported to see supported platforms."
         )
         return
 
     url = match.group(0).rstrip(".,!?)]}")
     platform = detect_platform(url)
+    if platform == "Unknown":
+        await update.message.reply_text(
+            "⚠️ This platform is not in the supported list yet. Use /supported."
+        )
+        return
+
+    used = await asyncio.to_thread(storage.usage_today, user_id)
+    limit = _limit_for(user_id)
+    if used >= limit:
+        await update.message.reply_text(
+            f"🚦 Daily limit reached ({limit}).\n"
+            "Premium users have a higher daily limit."
+        )
+        return
+
+    status = await update.message.reply_text("🔎 Inspecting media…")
+    try:
+        info = await get_media_info(url)
+    except DownloadError as exc:
+        await status.edit_text(
+            "❌ I couldn't inspect this URL. It may be private, restricted, "
+            "rate-limited, or temporarily unavailable."
+        )
+        return
 
     context.user_data["mediafetch_pending_url"] = url
     context.user_data["mediafetch_pending_platform"] = platform
+    context.user_data["mediafetch_pending_info"] = info
 
-    await update.message.reply_text(
-        f"🔎 <b>Platform:</b> {platform}\n\n"
-        "Choose how you want the media:",
-        reply_markup=_quality_keyboard(),
+    title = info.title[:80]
+    details = [f"🔎 <b>{platform}</b>", f"🎬 <b>{title}</b>"]
+    if info.duration_text:
+        details.append(f"⏱️ {info.duration_text}")
+    if info.item_count > 1:
+        details.append(f"🖼️ {info.item_count} items")
+    if info.heights:
+        details.append("📐 " + ", ".join(f"{height}p" for height in info.heights[:6]))
+
+    await status.edit_text(
+        "\n".join(details) + "\n\n<b>Choose download mode:</b>",
+        reply_markup=_quality_keyboard(info),
         parse_mode="HTML",
     )
 
 
 async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    if not query:
+    if not query or not query.message:
         return
 
     await query.answer()
-
     mode = query.data.removeprefix("mf:")
+
     if mode == "cancel":
-        context.user_data.pop("mediafetch_pending_url", None)
-        context.user_data.pop("mediafetch_pending_platform", None)
+        for key in (
+            "mediafetch_pending_url",
+            "mediafetch_pending_platform",
+            "mediafetch_pending_info",
+        ):
+            context.user_data.pop(key, None)
         await query.edit_message_text("❌ Download cancelled.")
         return
 
     url = context.user_data.pop("mediafetch_pending_url", None)
     platform = context.user_data.pop("mediafetch_pending_platform", "Unknown")
-
+    info = context.user_data.pop("mediafetch_pending_info", None)
     if not url:
-        await query.edit_message_text(
-            "⌛ This download request expired. Please send the URL again."
-        )
+        await query.edit_message_text("⌛ This request expired. Please send the URL again.")
         return
 
     user_id = update.effective_user.id if update.effective_user else query.message.chat_id
+    limit = _limit_for(user_id)
+    used = await asyncio.to_thread(storage.usage_today, user_id)
+    if used >= limit:
+        await query.edit_message_text(f"🚦 Daily limit reached ({limit}).")
+        return
 
     async with _ACTIVE_LOCK:
         if user_id in _ACTIVE_USERS:
             await query.edit_message_text(
-                "⏳ You already have a download running. "
-                "Please wait for it to finish."
+                "⏳ You already have a download running. Please wait for it to finish."
             )
             return
         _ACTIVE_USERS.add(user_id)
 
     labels = {
         "best": "Best quality",
+        "2160p": "2160p",
+        "1440p": "1440p",
+        "1080p": "1080p",
         "720p": "720p",
         "480p": "480p",
+        "360p": "360p",
         "audio": "MP3 audio",
+        "photo": "HD / Original photo",
     }
     label = labels.get(mode, mode)
-
     status = None
-    path: Path | None = None
+    path: Path | list[Path] | None = None
+    cache_hit = False
 
     try:
+        cache = await asyncio.to_thread(
+            storage.get_cache,
+            _cache_key(url, mode),
+            settings.cache_ttl_days * 86400,
+        )
+        if cache and cache.get("file_ids"):
+            cache_hit = True
+            await query.edit_message_text("⚡ <b>Cache hit</b> — sending instantly…", parse_mode="HTML")
+            for index, file_id in enumerate(cache["file_ids"], start=1):
+                caption = (
+                    f"⚡ Cached • {platform} • {label}"
+                    if len(cache["file_ids"]) == 1
+                    else f"⚡ Cached • {platform} • Photo {index}/{len(cache['file_ids'])}"
+                )
+                await query.message.reply_document(document=file_id, caption=caption)
+            await asyncio.to_thread(storage.increment_usage, user_id)
+            await asyncio.to_thread(storage.record_event, user_id, platform, True, 0, True)
+            return
+
         status = await query.edit_message_text(
             f"🔎 <b>Platform:</b> {platform}\n"
             f"🎯 <b>Mode:</b> {label}\n"
-            "⏬ <b>Progress:</b> starting…",
+            f"⏬ <b>Progress:</b> starting…",
             parse_mode="HTML",
         )
-
         await query.message.chat.send_action(ChatAction.UPLOAD_DOCUMENT)
 
         last_text = ""
@@ -196,7 +307,7 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await status.edit_text(
                 f"🔎 <b>Platform:</b> {platform}\n"
                 f"🎯 <b>Mode:</b> {label}\n"
-                "⏬ <b>Progress:</b> waiting for download slot…",
+                "⏬ <b>Progress:</b> downloading…",
                 parse_mode="HTML",
             )
             path = await download_media(
@@ -209,18 +320,17 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             _DOWNLOAD_SLOTS.release()
 
         paths = path if isinstance(path, list) else [path]
-        total_size_mb = sum(item.stat().st_size for item in paths) / (1024 * 1024)
-        oversized = [item for item in paths if item.stat().st_size > settings.max_file_mb * 1024 * 1024]
-        if oversized:
+        size_bytes = sum(item.stat().st_size for item in paths)
+        max_bytes = settings.max_file_mb * 1024 * 1024
+        if any(item.stat().st_size > max_bytes for item in paths):
             await status.edit_text(
-                f"⚠️ One or more files exceed the {settings.max_file_mb} MB limit."
+                f"⚠️ One or more files exceed the {settings.max_file_mb} MB upload limit."
             )
+            await asyncio.to_thread(storage.record_event, user_id, platform, False, size_bytes)
             return
 
-        await status.edit_text(
-            "📤 <b>Progress:</b> uploading to Telegram…",
-            parse_mode="HTML",
-        )
+        await status.edit_text("📤 <b>Uploading to Telegram…</b>", parse_mode="HTML")
+        file_ids: list[str] = []
 
         for index, item in enumerate(paths, start=1):
             size_mb = item.stat().st_size / (1024 * 1024)
@@ -229,26 +339,33 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 if len(paths) == 1
                 else f"✅ {platform} • Photo {index}/{len(paths)} • {size_mb:.1f} MB"
             )
-            # Send as a document to preserve the original HD image bytes.
             with item.open("rb") as media:
-                await query.message.reply_document(
-                    document=media,
-                    caption=caption,
-                )
+                sent = await query.message.reply_document(document=media, caption=caption)
+            if sent.document:
+                file_ids.append(sent.document.file_id)
 
+        if file_ids:
+            metadata = {
+                "title": info.title if isinstance(info, MediaInfo) else "Media",
+                "platform": platform,
+            }
+            await asyncio.to_thread(storage.set_cache, _cache_key(url, mode), file_ids, metadata)
+
+        await asyncio.to_thread(storage.increment_usage, user_id)
+        await asyncio.to_thread(storage.record_event, user_id, platform, True, size_bytes, cache_hit)
         await status.delete()
     except DownloadError:
+        await asyncio.to_thread(storage.record_event, user_id, platform, False, 0, cache_hit)
         if status:
             await status.edit_text(
                 "❌ <b>Download failed.</b>\n"
-                "The URL may be private, restricted, unsupported, or temporarily unavailable.",
+                "The source may be private, restricted, unsupported, or temporarily unavailable.",
                 parse_mode="HTML",
             )
     except Exception:
+        await asyncio.to_thread(storage.record_event, user_id, platform, False, 0, cache_hit)
         if status:
-            await status.edit_text(
-                "❌ Something went wrong while processing that link. Please try again."
-            )
+            await status.edit_text("❌ Something went wrong while processing that link. Please try again.")
     finally:
         if path:
             paths_to_remove = path if isinstance(path, list) else [path]
