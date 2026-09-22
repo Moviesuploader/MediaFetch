@@ -58,10 +58,12 @@ def _extract_info_sync(url: str) -> dict:
 
     # Image carousels may be represented as a playlist. Only retry the
     # playlist form when the single-item extraction exposed no video formats.
-    if not _has_video_format(info) and not _best_thumbnail(info):
-        opts["noplaylist"] = False
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+    if not _has_video_format(info):
+        entries = info.get("entries") or []
+        if not entries or len(entries) <= 1:
+            opts["noplaylist"] = False
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
     return info
 
 
