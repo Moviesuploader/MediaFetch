@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
+import secrets
 from pathlib import Path
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -18,6 +19,8 @@ from app.downloader.service import DownloadError, MediaInfo, download_media, get
 URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 _ACTIVE_USERS: set[int] = set()
 _ACTIVE_LOCK = asyncio.Lock()
+_PENDING_REQUESTS: dict[int, tuple[str, str, str, MediaInfo | None]] = {}
+_PENDING_LOCK = asyncio.Lock()
 _DOWNLOAD_SLOTS = asyncio.Semaphore(settings.max_concurrent_downloads)
 _RATE_LIMITER = UserRateLimiter(min_interval=3.0)
 
@@ -35,13 +38,13 @@ def _limit_for(user_id: int) -> int:
     return settings.premium_daily_limit if storage.is_premium(user_id) else settings.free_daily_limit
 
 
-def _quality_keyboard(info: MediaInfo) -> InlineKeyboardMarkup:
+def _quality_keyboard(info: MediaInfo, request_id: str) -> InlineKeyboardMarkup:
     if info.is_photo:
-        rows = [[InlineKeyboardButton("📸 HD / Original", callback_data="mf:photo")]]
+        rows = [[InlineKeyboardButton("📸 HD / Original", callback_data=f"mf:{request_id}:photo")]]
     else:
         rows = [[
-            InlineKeyboardButton("🎬 Best", callback_data="mf:best"),
-            InlineKeyboardButton("🎵 MP3", callback_data="mf:audio"),
+            InlineKeyboardButton("🎬 Best", callback_data=f"mf:{request_id}:best"),
+            InlineKeyboardButton("🎵 MP3", callback_data=f"mf:{request_id}:audio"),
         ]]
         max_height = max(info.heights, default=0)
         standards = [2160, 1440, 1080, 720, 480, 360]
@@ -50,11 +53,11 @@ def _quality_keyboard(info: MediaInfo) -> InlineKeyboardMarkup:
             rows.append([
                 InlineKeyboardButton(
                     f"📺 {height}p",
-                    callback_data=f"mf:{height}p",
+                    callback_data=f"mf:{request_id}:{height}p",
                 )
                 for height in available[index:index + 2]
             ])
-    rows.append([InlineKeyboardButton("❌ Cancel", callback_data="mf:cancel")])
+    rows.append([InlineKeyboardButton("❌ Cancel", callback_data=f"mf:{request_id}:cancel")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -171,19 +174,52 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
         return
 
+    async with _ACTIVE_LOCK:
+        if user_id in _ACTIVE_USERS:
+            await update.message.reply_text(
+                "⏳ You already have a download running. Please wait for it to finish."
+            )
+            return
+
+    request_id = secrets.token_hex(4)
+    async with _PENDING_LOCK:
+        if user_id in _PENDING_REQUESTS:
+            await update.message.reply_text(
+                "⌛ You already have a link being inspected. Please wait for the quality buttons."
+            )
+            return
+        _PENDING_REQUESTS[user_id] = (request_id, url, platform, None)
+
     status = await update.message.reply_text("🔎 Inspecting media…")
     try:
-        info = await get_media_info(url)
-    except DownloadError as exc:
+        info = await asyncio.wait_for(get_media_info(url), timeout=60)
+    except asyncio.TimeoutError:
+        async with _PENDING_LOCK:
+            current = _PENDING_REQUESTS.get(user_id)
+            if current and current[0] == request_id:
+                _PENDING_REQUESTS.pop(user_id, None)
+        await status.edit_text(
+            "⏱️ Media inspection timed out after 60 seconds. "
+            "The source may be slow, restricted, or temporarily unavailable. Please try again."
+        )
+        return
+    except DownloadError:
+        async with _PENDING_LOCK:
+            current = _PENDING_REQUESTS.get(user_id)
+            if current and current[0] == request_id:
+                _PENDING_REQUESTS.pop(user_id, None)
         await status.edit_text(
             "❌ I couldn't inspect this URL. It may be private, restricted, "
             "rate-limited, or temporarily unavailable."
         )
         return
 
-    context.user_data["mediafetch_pending_url"] = url
-    context.user_data["mediafetch_pending_platform"] = platform
-    context.user_data["mediafetch_pending_info"] = info
+    async with _PENDING_LOCK:
+        current = _PENDING_REQUESTS.get(user_id)
+        if not current or current[0] != request_id:
+            await status.edit_text("⌛ This request expired. Please send the URL again.")
+            return
+        _PENDING_REQUESTS[user_id] = (request_id, url, platform, info)
 
     title = info.title[:80]
     details = [f"🔎 <b>{platform}</b>", f"🎬 <b>{title}</b>"]
@@ -196,7 +232,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     await status.edit_text(
         "\n".join(details) + "\n\n<b>Choose download mode:</b>",
-        reply_markup=_quality_keyboard(info),
+        reply_markup=_quality_keyboard(info, request_id),
         parse_mode="HTML",
     )
 
@@ -207,31 +243,39 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     await query.answer()
-    mode = query.data.removeprefix("mf:")
-
-    if mode == "cancel":
-        for key in (
-            "mediafetch_pending_url",
-            "mediafetch_pending_platform",
-            "mediafetch_pending_info",
-        ):
-            context.user_data.pop(key, None)
-        await query.edit_message_text("❌ Download cancelled.")
+    parts = query.data.split(":") if query.data else []
+    if len(parts) != 3 or parts[0] != "mf":
+        await query.edit_message_text("⌛ This request is invalid. Please send the URL again.")
         return
+    request_id, mode = parts[1], parts[2]
 
-    url = context.user_data.pop("mediafetch_pending_url", None)
-    platform = context.user_data.pop("mediafetch_pending_platform", "Unknown")
-    info = context.user_data.pop("mediafetch_pending_info", None)
-    if not url:
+    user_id = update.effective_user.id if update.effective_user else query.message.chat_id
+    async with _PENDING_LOCK:
+        pending = _PENDING_REQUESTS.get(user_id)
+        if not pending or pending[0] != request_id:
+            pending = None
+        else:
+            _PENDING_REQUESTS.pop(user_id, None)
+
+    if not pending:
         await query.edit_message_text("⌛ This request expired. Please send the URL again.")
         return
 
-    user_id = update.effective_user.id if update.effective_user else query.message.chat_id
+    _, url, platform, info = pending
+    if mode == "cancel":
+        await query.edit_message_text("❌ Download cancelled.")
+        return
+
     limit = _limit_for(user_id)
     used = await asyncio.to_thread(storage.usage_today, user_id)
     if used >= limit:
         await query.edit_message_text(f"🚦 Daily limit reached ({limit}).")
         return
+
+    max_file_mb = min(
+        settings.premium_max_file_mb if storage.is_premium(user_id) else settings.max_file_mb,
+        50,
+    )
 
     async with _ACTIVE_LOCK:
         if user_id in _ACTIVE_USERS:
@@ -263,7 +307,8 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             _cache_key(url, mode),
             settings.cache_ttl_days * 86400,
         )
-        if cache and cache.get("file_ids"):
+        cached_size = int((cache or {}).get("metadata", {}).get("size_bytes", 0) or 0)
+        if cache and cache.get("file_ids") and (not cached_size or cached_size <= max_file_mb * 1024 * 1024):
             try:
                 cache_hit = True
                 await query.edit_message_text("⚡ <b>Cache hit</b> — sending instantly…", parse_mode="HTML")
@@ -318,6 +363,7 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 url,
                 settings.download_dir,
                 mode=mode,
+                max_file_mb=max_file_mb,
                 progress_callback=progress,
             )
         finally:
@@ -325,10 +371,10 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         paths = path if isinstance(path, list) else [path]
         size_bytes = sum(item.stat().st_size for item in paths)
-        max_bytes = settings.max_file_mb * 1024 * 1024
+        max_bytes = max_file_mb * 1024 * 1024
         if any(item.stat().st_size > max_bytes for item in paths):
             await status.edit_text(
-                f"⚠️ One or more files exceed the {settings.max_file_mb} MB upload limit."
+                f"⚠️ One or more files exceed the {max_file_mb} MB upload limit."
             )
             await asyncio.to_thread(storage.record_event, user_id, platform, False, size_bytes)
             return
@@ -352,6 +398,7 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             metadata = {
                 "title": info.title if isinstance(info, MediaInfo) else "Media",
                 "platform": platform,
+                "size_bytes": size_bytes,
             }
             await asyncio.to_thread(storage.set_cache, _cache_key(url, mode), file_ids, metadata)
 
