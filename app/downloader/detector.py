@@ -4,15 +4,21 @@ from urllib.parse import urlparse
 PLATFORMS = {
     "youtube.com": "YouTube",
     "youtu.be": "YouTube",
+    "youtube-nocookie.com": "YouTube",
     "instagram.com": "Instagram",
     "facebook.com": "Facebook",
     "fb.watch": "Facebook",
     "reddit.com": "Reddit",
+    "redd.it": "Reddit",
     "x.com": "X",
     "twitter.com": "X",
+    "t.co": "X",
     "tiktok.com": "TikTok",
+    "vm.tiktok.com": "TikTok",
     "pinterest.com": "Pinterest",
+    "pin.it": "Pinterest",
     "threads.net": "Threads",
+    "threads.com": "Threads",
 }
 
 
