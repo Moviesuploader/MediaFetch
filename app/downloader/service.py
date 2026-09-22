@@ -7,6 +7,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
+from urllib.parse import urlsplit
 
 import yt_dlp
 
@@ -47,9 +48,11 @@ def _base_opts() -> dict:
         "socket_timeout": 30,
         "retries": 2,
         "fragment_retries": 2,
-        # Keep yt-dlp's external JS components refreshable in the container.
-        # Deno is already installed in the MediaFetch image.
-        "remote_components": {"ejs:github"},
+        # Deno is already installed in the MediaFetch image. Allow yt-dlp to
+        # fetch current EJS challenge components when the bundled package is
+        # unavailable/outdated.
+        "js_runtimes": ["deno"],
+        "remote_components": ["ejs:github"],
     }
 
     # Optional admin-imported Netscape cookies. These are applied to every
@@ -126,32 +129,72 @@ def _url_variants(url: str) -> list[str]:
     return variants
 
 
-def _extract_info_sync(url: str) -> dict:
-    opts = _base_opts()
+def _platform_from_url(url: str) -> str:
+    host = urlsplit(url).netloc.lower().split(":")[0]
+    if host.startswith("www."):
+        host = host[4:]
+    if host.endswith(".facebook.com") or host in {"facebook.com", "fb.watch"}:
+        return "facebook"
+    if host.endswith(".instagram.com") or host == "instagram.com":
+        return "instagram"
+    if host.endswith(".threads.net") or host.endswith(".threads.com"):
+        return "threads"
+    if host.endswith(".pinterest.com") or host in {"pinterest.com", "pin.it"}:
+        return "pinterest"
+    if host.endswith(".reddit.com") or host in {"reddit.com", "redd.it"}:
+        return "reddit"
+    if host in {"x.com", "twitter.com"} or host.endswith(".x.com") or host.endswith(".twitter.com"):
+        return "x"
+    return "generic"
+
+
+def _extract_profiles(url: str) -> list[dict]:
+    """Return ordered, non-bypass extraction profiles.
+
+    The generic profile lets yt-dlp use OpenGraph/direct-media metadata when a
+    site's dedicated extractor is temporarily broken. It does not authenticate
+    or bypass private/DRM access.
+    """
+    platform = _platform_from_url(url)
+    profiles = [_base_opts()]
+    if platform in {"facebook", "instagram", "threads", "pinterest", "reddit", "x"}:
+        generic = _base_opts()
+        generic["allowed_extractors"] = ["generic"]
+        profiles.append(generic)
+    return profiles
+
+
+def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
     last_error: Exception | None = None
 
     for candidate in _url_variants(url):
-        try:
-            opts["noplaylist"] = True
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(candidate, download=False)
+        for profile in _extract_profiles(candidate):
+            try:
+                opts = dict(profile)
+                opts["noplaylist"] = True
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(candidate, download=False)
 
-            # Image carousels may be represented as a playlist. Retry the
-            # playlist form when a single-item extraction exposes no video.
-            if not _has_video_format(info):
-                entries = info.get("entries") or []
-                if not entries or len(entries) <= 1:
-                    opts["noplaylist"] = False
-                    with yt_dlp.YoutubeDL(opts) as ydl:
-                        info = ydl.extract_info(candidate, download=False)
-            return info
-        except Exception as exc:
-            last_error = exc
-            # A canonical Instagram retry is specifically intended for
-            # selector errors such as "Media number out of range".
-            continue
+                # Image carousels may be represented as a playlist. Retry the
+                # playlist form when a single-item extraction exposes no video.
+                if not _has_video_format(info):
+                    entries = info.get("entries") or []
+                    if not entries or len(entries) <= 1:
+                        playlist_opts = dict(opts)
+                        playlist_opts["noplaylist"] = False
+                        with yt_dlp.YoutubeDL(playlist_opts) as ydl:
+                            info = ydl.extract_info(candidate, download=False)
+                        opts = playlist_opts
+                return info, candidate, opts
+            except Exception as exc:
+                last_error = exc
 
     raise last_error or DownloadError("Unable to extract media.")
+
+
+def _extract_info_sync(url: str) -> dict:
+    info, _, _ = _extract_with_fallback(url)
+    return info
 
 
 def inspect_media(url: str) -> MediaInfo:
@@ -380,20 +423,14 @@ def _download_sync(
     try:
         # Use the same URL fallback strategy during the actual download.
         info = None
-        last_error: Exception | None = None
         selected_url = url
-        for candidate in _url_variants(url):
-            try:
-                opts["noplaylist"] = True
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(candidate, download=False)
-                selected_url = candidate
-                break
-            except Exception as exc:
-                last_error = exc
-
-        if info is None:
-            raise DownloadError(str(last_error) if last_error else "Unable to extract media.")
+        try:
+            info, selected_url, extraction_opts = _extract_with_fallback(url)
+            # Preserve download-specific options (format/output/progress) while
+            # retaining the successful extraction profile.
+            opts.update(extraction_opts)
+        except Exception as exc:
+            raise DownloadError(str(exc)) from exc
 
         if mode == "photo" or (mode != "audio" and not _has_video_format(info)):
             if mode != "photo":
