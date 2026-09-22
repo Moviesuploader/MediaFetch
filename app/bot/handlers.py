@@ -13,6 +13,7 @@ from app.downloader.service import DownloadError, download_media
 URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 _ACTIVE_USERS: set[int] = set()
 _ACTIVE_LOCK = asyncio.Lock()
+_DOWNLOAD_SLOTS = asyncio.Semaphore(settings.max_concurrent_downloads)
 
 SUPPORTED_TEXT = (
     "YouTube • Instagram • Facebook • Reddit • X/Twitter • "
@@ -181,12 +182,22 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             except Exception:
                 pass
 
-        path = await download_media(
-            url,
-            settings.download_dir,
-            mode=mode,
-            progress_callback=progress,
-        )
+        await _DOWNLOAD_SLOTS.acquire()
+        try:
+            await status.edit_text(
+                f"🔎 <b>Platform:</b> {platform}\n"
+                f"🎯 <b>Mode:</b> {label}\n"
+                "⏬ <b>Progress:</b> waiting for download slot…",
+                parse_mode="HTML",
+            )
+            path = await download_media(
+                url,
+                settings.download_dir,
+                mode=mode,
+                progress_callback=progress,
+            )
+        finally:
+            _DOWNLOAD_SLOTS.release()
 
         size_mb = path.stat().st_size / (1024 * 1024)
         if size_mb > settings.max_file_mb:
