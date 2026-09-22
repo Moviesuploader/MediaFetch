@@ -81,13 +81,13 @@ class Storage:
     def increment_usage(self, user_id: int) -> int:
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if self._db is not None:
-            doc = self._db.usage.find_one_and_update(
+            self._db.usage.update_one(
                 {"user_id": user_id, "day": day},
                 {"$inc": {"count": 1}},
                 upsert=True,
-                return_document=True,
             )
-            return int(doc.get("count", 1))
+            doc = self._db.usage.find_one({"user_id": user_id, "day": day})
+            return int(doc.get("count", 1)) if doc else 1
         with self._lock:
             key = (user_id, day)
             self._usage[key] = self._usage.get(key, 0) + 1
@@ -102,7 +102,7 @@ class Storage:
             return self._usage.get((user_id, day), 0)
 
     def set_premium(self, user_id: int, days: int) -> float:
-        expires = time.time() + max(days, 1) * 86400
+        expires = 0.0 if days <= 0 else time.time() + days * 86400
         if self._db is not None:
             self._db.users.update_one(
                 {"user_id": user_id},
@@ -111,7 +111,10 @@ class Storage:
             )
         else:
             with self._lock:
-                self._premium[user_id] = expires
+                if expires:
+                    self._premium[user_id] = expires
+                else:
+                    self._premium.pop(user_id, None)
         return expires
 
     def premium_until(self, user_id: int) -> float:
@@ -149,6 +152,20 @@ class Storage:
                 self._stats["cache_hits"] += 1
             if not success:
                 self._stats["failures"] += 1
+
+    def set_maintenance(self, enabled: bool) -> None:
+        if self._db is not None:
+            self._db.settings.update_one({"key": "maintenance"}, {"$set": {"key": "maintenance", "enabled": enabled}}, upsert=True)
+        else:
+            with self._lock:
+                self._maintenance = enabled
+
+    def maintenance(self) -> bool:
+        if self._db is not None:
+            doc = self._db.settings.find_one({"key": "maintenance"})
+            return bool(doc and doc.get("enabled"))
+        with self._lock:
+            return bool(getattr(self, "_maintenance", False))
 
     def stats(self) -> dict[str, int]:
         if self._db is not None:
