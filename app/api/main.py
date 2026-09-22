@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import secrets
 from contextlib import asynccontextmanager
 
@@ -8,12 +9,15 @@ from telegram import Update
 from app.bot.application import build_application
 from app.core.config import settings
 
+logger = logging.getLogger("mediafetch")
+
 
 def _webhook_base_url() -> str:
-    if settings.public_base_url:
-        return settings.public_base_url.rstrip("/")
+    # On Koyeb, always prefer the platform-provided public domain.
     if settings.koyeb_public_domain:
         return f"https://{settings.koyeb_public_domain.rstrip('/')}"
+    if settings.public_base_url:
+        return settings.public_base_url.rstrip("/")
     return ""
 
 
@@ -30,21 +34,34 @@ async def lifespan(app: FastAPI):
         webhook_base_url = _webhook_base_url()
         if not webhook_base_url:
             raise RuntimeError(
-                "WEBHOOK_MODE requires PUBLIC_BASE_URL or KOYEB_PUBLIC_DOMAIN."
+                "WEBHOOK_MODE requires KOYEB_PUBLIC_DOMAIN or PUBLIC_BASE_URL."
             )
 
         webhook_secret = settings.webhook_secret or secrets.token_urlsafe(32)
         app.state.webhook_secret = webhook_secret
+        webhook_url = f"{webhook_base_url}/telegram/webhook"
 
         await bot.bot.set_webhook(
-            url=f"{webhook_base_url}/telegram/webhook",
+            url=webhook_url,
             secret_token=webhook_secret,
             allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=False,
+        )
+        webhook_info = await bot.bot.get_webhook_info()
+        logger.info(
+            "Telegram webhook configured: url=%s pending=%s last_error=%s",
+            webhook_info.url,
+            webhook_info.pending_update_count,
+            webhook_info.last_error_message,
         )
     else:
         if bot.updater is None:
             raise RuntimeError("Telegram updater is unavailable.")
-        await bot.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        await bot.updater.start_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=False,
+        )
+        logger.info("Telegram long polling started.")
 
     yield
 
@@ -54,7 +71,7 @@ async def lifespan(app: FastAPI):
         await asyncio.gather(*app.state.webhook_tasks, return_exceptions=True)
 
     if settings.webhook_mode:
-        await bot.bot.delete_webhook()
+        await bot.bot.delete_webhook(drop_pending_updates=False)
     elif bot.updater is not None:
         await bot.updater.stop()
 
@@ -67,12 +84,18 @@ app = FastAPI(title="MediaFetch", version="0.1.0", lifespan=lifespan)
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "MediaFetch"}
+    return {
+        "status": "ok",
+        "service": "MediaFetch",
+        "telegram_mode": "webhook" if settings.webhook_mode else "polling",
+    }
 
 
 async def _process_webhook_update(update: Update) -> None:
     try:
         await app.state.bot.process_update(update)
+    except Exception:
+        logger.exception("Unhandled Telegram update processing error.")
     finally:
         app.state.webhook_tasks.discard(asyncio.current_task())
 
@@ -84,10 +107,15 @@ async def telegram_webhook(
 ) -> dict[str, bool]:
     expected_secret = getattr(app.state, "webhook_secret", "")
     if expected_secret and x_telegram_bot_api_secret_token != expected_secret:
+        logger.warning("Rejected Telegram webhook request: invalid secret.")
         raise HTTPException(status_code=403, detail="Invalid webhook secret.")
 
     payload = await request.json()
     update = Update.de_json(payload, app.state.bot.bot)
+    logger.info(
+        "Telegram webhook update received: update_id=%s",
+        payload.get("update_id"),
+    )
 
     task = asyncio.create_task(_process_webhook_update(update))
     app.state.webhook_tasks.add(task)
