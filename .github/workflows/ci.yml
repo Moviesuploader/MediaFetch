@@ -19,3 +19,11 @@ jobs:
         run: python -m compileall -q app run.py
       - name: Tests
         run: pytest
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build -t mediafetch:ci .
