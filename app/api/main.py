@@ -58,6 +58,10 @@ async def lifespan(app: FastAPI):
     else:
         if bot.updater is None:
             raise RuntimeError("Telegram updater is unavailable.")
+
+        # Polling and webhook mode are mutually exclusive. Remove any stale
+        # webhook before starting the local/polling updater.
+        await bot.bot.delete_webhook(drop_pending_updates=False)
         await bot.updater.start_polling(
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=False,
@@ -66,11 +70,12 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # PTB owns update processing through update_queue. Its stop() waits for
-    # application tasks, so do not cancel webhook handler tasks here.
-    if settings.webhook_mode:
-        await bot.bot.delete_webhook(drop_pending_updates=False)
-    elif bot.updater is not None:
+    # IMPORTANT: In webhook mode, never delete the webhook during application
+    # shutdown. Koyeb can stop/restart/roll instances, and an old instance
+    # deleting the webhook after a new instance configured it can silently
+    # break Telegram -> Koyeb delivery. The webhook is intentionally persistent
+    # and is refreshed on the next startup.
+    if not settings.webhook_mode and bot.updater is not None:
         await bot.updater.stop()
 
     await bot.stop()
