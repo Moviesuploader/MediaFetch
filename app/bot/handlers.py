@@ -205,7 +205,8 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             "The source may be slow, restricted, or temporarily unavailable. Please try again."
         )
         return
-    except DownloadError:
+    except DownloadError as exc:
+        logger.warning("Media inspection failed user=%s platform=%s url=%s error=%s", user_id, platform, url, exc)
         async with _PENDING_LOCK:
             current = _PENDING_REQUESTS.get(user_id)
             if current and current[0] == request_id:

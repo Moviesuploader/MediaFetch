@@ -29,6 +29,11 @@ class DownloaderRoutingTests(unittest.TestCase):
         self.assertGreaterEqual(len(profiles), 2)
         self.assertEqual(profiles[-1]["allowed_extractors"], ["generic"])
 
+    def test_ejs_runtime_is_enabled(self):
+        profiles = _extract_profiles("https://www.youtube.com/watch?v=test")
+        self.assertEqual(profiles[0]["js_runtimes"], ["deno"])
+        self.assertIn("ejs:github", profiles[0]["remote_components"])
+
     def test_quality_selector(self):
         self.assertEqual(_quality_selector("best"), "bv*+ba/b")
         self.assertEqual(_quality_selector("audio"), "bestaudio/best")
