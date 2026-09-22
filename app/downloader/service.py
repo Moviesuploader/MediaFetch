@@ -47,6 +47,9 @@ def _base_opts() -> dict:
         "socket_timeout": 30,
         "retries": 2,
         "fragment_retries": 2,
+        # Keep yt-dlp's external JS components refreshable in the container.
+        # Deno is already installed in the MediaFetch image.
+        "remote_components": {"ejs:github"},
     }
 
     # Optional admin-imported Netscape cookies. These are applied to every
