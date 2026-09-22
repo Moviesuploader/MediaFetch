@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 from telegram import Update
@@ -17,7 +18,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user_id = update.effective_user.id if update.effective_user else None
     if not _is_admin(user_id) or not update.message:
         return
-    stats = await __import__("asyncio").to_thread(storage.stats)
+    stats = await asyncio.to_thread(storage.stats)
     mode = "MongoDB" if storage.persistent else "memory fallback"
     await update.message.reply_text(
         "🛠 <b>MediaFetch Admin</b>\n\n"
@@ -85,7 +86,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     sent = failed = 0
     for target in users:
         try:
-            await source.copy(chat_id=target)
+            await context.bot.copy_message(chat_id=target, from_chat_id=source.chat_id, message_id=source.message_id)
             sent += 1
         except Exception:
             failed += 1
