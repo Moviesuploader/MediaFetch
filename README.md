@@ -1,121 +1,139 @@
 # MediaFetch 🚀
 
-A modular Telegram media downloader built with Python, FastAPI, Telegram Bot API, yt-dlp, and FFmpeg.
+A modular Telegram public-media downloader built with Python, FastAPI, Telegram Bot API, yt-dlp and FFmpeg.
 
-## Current milestone
+## Feature set
 
-1. User sends a public media URL.
-2. MediaFetch detects the platform.
-3. User chooses Best / 720p / 480p / MP3.
-4. yt-dlp downloads the media.
-5. Progress is shown in Telegram.
-6. The file is sent back to the user.
-7. Temporary files are cleaned up.
+### Phase 1 — Core downloader
+- Public URL detection for YouTube, Instagram, Facebook, Reddit, X/Twitter, TikTok, Pinterest and Threads.
+- Best available video/audio download.
+- Dynamic quality buttons based on extracted video heights.
+- 2160p / 1440p / 1080p / 720p / 480p / 360p when available.
+- MP3 extraction through FFmpeg.
+- Highest-resolution photo download.
+- Multi-photo/carousel handling with a configurable item limit.
+- HD photos are sent as Telegram documents so the original downloaded bytes are preserved.
+- Progress updates, upload status and clear failures.
+- Per-user active-download protection.
+- Global concurrency control.
+- Per-user rate limiting.
+- File-size enforcement and temporary-file cleanup.
 
-Current platform detection covers YouTube, Instagram, Facebook, Reddit, X/Twitter, TikTok, Pinterest, and Threads, including common short-link domains. The downloader uses yt-dlp for the major platforms, plus the 'yt-dlp-threads' plugin for public Threads posts. Actual availability can still change when a platform changes its site or applies access controls.
-
-## Downloader reliability
-
-- Latest compatible yt-dlp is installed at image build time.
-- yt-dlp[default] includes the current yt-dlp EJS challenge-solver package.
-- Deno 2.9.7 is included in the Docker image for YouTube JavaScript challenge solving.
-- Threads public video extraction uses the 'yt-dlp-threads' plugin because yt-dlp does not currently ship a built-in Threads extractor.
-- Best mode prefers separate best video + best audio streams and merges them with FFmpeg.
-- MP3 mode uses FFmpeg for audio extraction.
-- Per-user request rate limiting.
-- One active download per user.
-- Global download concurrency limit.
-- Configurable Telegram upload-size limit.
-- 30-second downloader socket timeout.
-- Temporary-file cleanup.
+### Phase 2 — Reliability and UX
+- Metadata inspection before download: title, duration, uploader, available resolutions and carousel count.
+- Supported-platform validation before yt-dlp work.
+- Retry settings for transient extractor/download failures.
+- Koyeb-compatible FastAPI webhook mode.
 - /health endpoint.
-- Platform-provided PORT support.
-- Telegram webhook mode for Koyeb scale-to-zero.
-- Automated compile/test CI.
+- Docker image with FFmpeg and Deno for current yt-dlp JavaScript challenge solving.
+- Automated compile/test and Docker-build CI.
+
+### Phase 3 — Service layer
+- Telegram file_id cache to avoid re-downloading identical URL + quality requests.
+- Configurable cache TTL.
+- Optional MongoDB persistence for cache, users, usage and analytics.
+- In-memory fallback when MongoDB is not configured.
+- Free and premium daily usage limits.
+- Admin statistics.
+- Admin-granted premium access.
+- Maintenance mode.
+- Reply-based broadcast.
+- Download success/failure/cache-hit analytics.
+
+## Commands
+
+User commands:
+- /start
+- /help
+- /supported
+- /about
+- /premium
+
+Admin commands (only IDs in ADMIN_IDS):
+- /admin
+- /premium_grant USER_ID DAYS
+- /revoke USER_ID
+- /maintenance on|off
+- /broadcast — reply to the message that should be broadcast.
 
 ## Supported platforms
 
 | Platform | URL examples | Notes |
 |---|---|---|
-| YouTube | youtube.com, youtu.be | Deno/EJS enabled; some YouTube access controls may still require authentication or platform-provided tokens. |
-| Instagram | instagram.com | Public posts/Reels supported when yt-dlp can access them. |
-| Facebook | facebook.com, fb.watch | Public media where yt-dlp can extract it. |
+| YouTube | youtube.com, youtu.be | Deno/EJS enabled; some videos may still require access tokens or authentication. |
+| Instagram | instagram.com | Public media when yt-dlp can access it. |
+| Facebook | facebook.com, fb.watch | Public media where extractable. |
 | Reddit | reddit.com, redd.it | Public media where available. |
-| X/Twitter | x.com, twitter.com | Public media where yt-dlp can extract it. |
+| X/Twitter | x.com, twitter.com | Public media where extractable. |
 | TikTok | tiktok.com, vm.tiktok.com | Public media where available. |
 | Pinterest | pinterest.com, pin.it | Pins with downloadable media. |
-| Threads | threads.net, threads.com | Public video posts via the Threads extractor plugin. |
+| Threads | threads.net, threads.com | Public media via the Threads extractor plugin. |
 
-This is not a promise that every URL on every platform will work. Social platforms frequently change their APIs, HTML, anti-bot systems, and access requirements. The correct behavior is to return a clear download error when the source cannot be accessed.
+Platform behavior can change. A supported domain does not guarantee that every URL on every platform will work.
 
-## Reliability and deployment features
+## Configuration
 
-- Per-user request rate limiting
-- One active download per user
-- Global download concurrency limit
-- Configurable Telegram upload-size limit
-- 30-second downloader socket timeout
-- Temporary-file cleanup
-- Docker image with FFmpeg and Deno
-- /health endpoint
-- Platform-provided PORT support
-- Telegram webhook mode for Koyeb scale-to-zero
-- Automated compile/test CI
+Copy .env.example to .env.
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| BOT_TOKEN | — | Telegram BotFather token |
+| DOWNLOAD_DIR | /tmp/mediafetch | Temporary download directory |
+| MAX_FILE_MB | 50 | Telegram upload safety limit |
+| MAX_CONCURRENT_DOWNLOADS | 1 | Global downloader concurrency |
+| MONGODB_URI | empty | Optional MongoDB connection |
+| MONGODB_DB | mediafetch | MongoDB database name |
+| ADMIN_IDS | empty | Comma-separated Telegram admin IDs |
+| FREE_DAILY_LIMIT | 10 | Free successful requests/day/user |
+| PREMIUM_DAILY_LIMIT | 100 | Premium successful requests/day/user |
+| CACHE_TTL_DAYS | 7 | Telegram file-id cache lifetime |
+| MAX_CAROUSEL_ITEMS | 10 | Maximum photos handled per post |
+| WEBHOOK_MODE | false | Enable Telegram webhook mode |
+| WEBHOOK_SECRET | empty | Generated automatically when empty |
+| PUBLIC_BASE_URL | empty | Optional explicit webhook base URL |
 
 ## Koyeb deployment
 
-Koyeb Free provides 512 MB RAM, 0.1 vCPU and 2 GB SSD. Its Free Instance is a Web Service and automatically scales to zero after one hour without incoming traffic. MediaFetch therefore supports Telegram webhook mode for Koyeb instead of relying on long polling.
-
-Recommended Koyeb configuration:
-
+Recommended:
 - Service type: Web Service
-- Deployment: GitHub repository 'Moviesuploader/MediaFetch', branch 'main'
-- Build: repository Dockerfile
+- Repository: Moviesuploader/MediaFetch
+- Branch: main
+- Build: Dockerfile
 - Region: Frankfurt or Washington, D.C.
-- Instance: Free
 - Exposed port: 8000 / HTTP
-- Health check: HTTP GET /health
+- Health check: GET /health
+- WEBHOOK_MODE=true
 - MAX_CONCURRENT_DOWNLOADS=1
 
-Environment variables:
+Koyeb exposes KOYEB_PUBLIC_DOMAIN, which MediaFetch uses automatically for the Telegram webhook.
 
-| Variable | Value |
-|---|---|
-| BOT_TOKEN | Telegram BotFather token |
-| WEBHOOK_MODE | true |
-| MAX_CONCURRENT_DOWNLOADS | 1 |
-| DOWNLOAD_DIR | /tmp/mediafetch |
-| MAX_FILE_MB | 50 |
-| WEBHOOK_SECRET | leave empty; generated automatically |
-| PUBLIC_BASE_URL | leave empty; Koyeb domain is detected automatically |
-
-Koyeb exposes KOYEB_PUBLIC_DOMAIN; MediaFetch automatically uses it to register the Telegram webhook at /telegram/webhook.
+MongoDB is optional. For a persistent production cache, usage limits and analytics, configure MONGODB_URI.
 
 ## Local setup
 
-Install Python 3.12+ and FFmpeg, create a Telegram bot with BotFather, copy .env.example to .env, set BOT_TOKEN, then run:
+Install Python 3.12+ and FFmpeg:
 
+~~~bash
 pip install -r requirements.txt
 python run.py
+~~~
 
-Local development defaults to Telegram long polling. Set WEBHOOK_MODE=true only when a public HTTPS endpoint is available.
+Local development defaults to Telegram long polling. Use webhook mode only with a public HTTPS endpoint.
 
-Health check: GET /health
+## Tests
 
-Tests:
-
+~~~bash
 pip install -r requirements-dev.txt
 python -m compileall -q app run.py
 pytest
+~~~
 
-## Docker
+CI also builds the Docker image.
 
-The Dockerfile installs FFmpeg and Deno and starts MediaFetch with python run.py. The application listens on port 8000 by default and honors the platform PORT variable.
+## Downloader reliability
 
-## Resource note
-
-Koyeb Free has limited CPU/RAM/storage. Large media files and FFmpeg conversions may be slow or fail under the 512 MB / 0.1 vCPU limits. /tmp/mediafetch is ephemeral and should not be treated as permanent storage.
+yt-dlp supports format selection and metadata extraction through its Python API. Media availability depends on the extractor and source. YouTube in particular may enforce PO-token or authentication requirements that cannot be solved by MediaFetch alone.
 
 ## Important
 
-MediaFetch is intended for content the user is authorized to download. Private, DRM-protected, login-required, or otherwise restricted content may not be downloadable, and platform terms and applicable laws still apply.
+MediaFetch is intended for content the user is authorized to download. Private, DRM-protected, login-required or otherwise restricted content may not be downloadable, and platform terms and applicable laws still apply.
