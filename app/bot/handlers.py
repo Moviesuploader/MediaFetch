@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import re
 import secrets
 from pathlib import Path
@@ -23,6 +24,7 @@ _PENDING_REQUESTS: dict[int, tuple[str, str, str, MediaInfo | None]] = {}
 _PENDING_LOCK = asyncio.Lock()
 _DOWNLOAD_SLOTS = asyncio.Semaphore(settings.max_concurrent_downloads)
 _RATE_LIMITER = UserRateLimiter(min_interval=3.0)
+logger = logging.getLogger(__name__)
 
 SUPPORTED_TEXT = (
     "YouTube • Instagram • Facebook • Reddit • X/Twitter • "
@@ -405,7 +407,8 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await asyncio.to_thread(storage.increment_usage, user_id)
         await asyncio.to_thread(storage.record_event, user_id, platform, True, size_bytes, cache_hit)
         await status.delete()
-    except DownloadError:
+    except DownloadError as exc:
+        logger.warning("Download failed user=%s platform=%s mode=%s error=%s", user_id, platform, mode, exc)
         await asyncio.to_thread(storage.record_event, user_id, platform, False, 0, cache_hit)
         if status:
             await status.edit_text(
@@ -414,6 +417,7 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 parse_mode="HTML",
             )
     except Exception:
+        logger.exception("Unexpected download handler failure user=%s platform=%s mode=%s", user_id, platform, mode)
         await asyncio.to_thread(storage.record_event, user_id, platform, False, 0, cache_hit)
         if status:
             await status.edit_text("❌ Something went wrong while processing that link. Please try again.")
