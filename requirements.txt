@@ -5,3 +5,4 @@ yt-dlp[default]>=2025.1.0
 yt-dlp-threads>=0.1.0,<0.2
 pydantic-settings>=2.6,<3
 python-dotenv>=1.0,<2
+pymongo>=4.8,<5
