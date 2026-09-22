@@ -199,7 +199,7 @@ def _quality_selector(mode: str) -> str:
         return ""
     if mode.endswith("p") and mode[:-1].isdigit():
         height = int(mode[:-1])
-        return f"bv*[height<=?{height}]+ba/b[height<=?{height}]/bv*+ba/b"
+        return f"bv*[height<=?{height}]+ba/b[height<=?{height}]"
     raise DownloadError("Unknown download mode.")
 
 
