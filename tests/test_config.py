@@ -5,4 +5,5 @@ def test_default_settings(monkeypatch) -> None:
     settings = Settings()
     assert settings.download_dir == "/tmp/mediafetch"
     assert settings.max_file_mb == 50
-    assert settings.max_concurrent_downloads == 2
+    assert settings.max_concurrent_downloads == 1
+    assert settings.free_daily_limit == 10
