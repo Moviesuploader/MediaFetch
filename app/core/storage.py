@@ -19,6 +19,7 @@ class Storage:
         self._cache: dict[str, dict[str, Any]] = {}
         self._usage: dict[tuple[int, str], int] = {}
         self._premium: dict[int, float] = {}
+        self._users: set[int] = set()
         self._stats = {"downloads": 0, "cache_hits": 0, "failures": 0, "bytes": 0}
         self._client = None
         self._db = None
@@ -71,12 +72,15 @@ class Storage:
         doc = {"user_id": user_id, "username": username, "updated_at": datetime.now(timezone.utc)}
         if self._db is not None:
             self._db.users.update_one({"user_id": user_id}, {"$set": doc}, upsert=True)
+        else:
+            with self._lock:
+                self._users.add(user_id)
 
     def user_ids(self) -> list[int]:
         if self._db is not None:
             return [int(doc["user_id"]) for doc in self._db.users.find({}, {"user_id": 1}) if doc.get("user_id")]
         with self._lock:
-            return sorted({uid for uid, _ in self._usage} | set(self._premium))
+            return sorted(self._users | {uid for uid, _ in self._usage} | set(self._premium))
 
     def increment_usage(self, user_id: int) -> int:
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
