@@ -264,18 +264,22 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             settings.cache_ttl_days * 86400,
         )
         if cache and cache.get("file_ids"):
-            cache_hit = True
-            await query.edit_message_text("⚡ <b>Cache hit</b> — sending instantly…", parse_mode="HTML")
-            for index, file_id in enumerate(cache["file_ids"], start=1):
-                caption = (
-                    f"⚡ Cached • {platform} • {label}"
-                    if len(cache["file_ids"]) == 1
-                    else f"⚡ Cached • {platform} • Photo {index}/{len(cache['file_ids'])}"
-                )
-                await query.message.reply_document(document=file_id, caption=caption)
-            await asyncio.to_thread(storage.increment_usage, user_id)
-            await asyncio.to_thread(storage.record_event, user_id, platform, True, 0, True)
-            return
+            try:
+                cache_hit = True
+                await query.edit_message_text("⚡ <b>Cache hit</b> — sending instantly…", parse_mode="HTML")
+                for index, file_id in enumerate(cache["file_ids"], start=1):
+                    caption = (
+                        f"⚡ Cached • {platform} • {label}"
+                        if len(cache["file_ids"]) == 1
+                        else f"⚡ Cached • {platform} • Photo {index}/{len(cache['file_ids'])}"
+                    )
+                    await query.message.reply_document(document=file_id, caption=caption)
+                await asyncio.to_thread(storage.increment_usage, user_id)
+                await asyncio.to_thread(storage.record_event, user_id, platform, True, 0, True)
+                return
+            except Exception:
+                await asyncio.to_thread(storage.delete_cache, _cache_key(url, mode))
+                cache_hit = False
 
         status = await query.edit_message_text(
             f"🔎 <b>Platform:</b> {platform}\n"
