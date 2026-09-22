@@ -25,18 +25,29 @@ from app.bot.handlers import (
 from app.core.config import settings
 
 
+async def _error_handler(update, context) -> None:
+    import logging
+    logging.getLogger("mediafetch").exception(
+        "Unhandled Telegram handler error: update_id=%s",
+        getattr(update, "update_id", None),
+        exc_info=context.error,
+    )
+
+
 def build_application() -> Application:
     if not settings.bot_token:
         raise RuntimeError("BOT_TOKEN is required to start MediaFetch.")
 
-    # Webhook updates must not queue behind a slow yt-dlp extraction.
-    # The downloader itself is still protected by MAX_CONCURRENT_DOWNLOADS.
+    # This service owns the HTTP webhook endpoint, so PTB must not create its
+    # own Updater. Telegram updates enter through application.update_queue.
     application = (
         Application.builder()
         .token(settings.bot_token)
+        .updater(None)
         .concurrent_updates(8)
         .build()
     )
+
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("about", about))
@@ -53,4 +64,5 @@ def build_application() -> Application:
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url)
     )
+    application.add_error_handler(_error_handler)
     return application
