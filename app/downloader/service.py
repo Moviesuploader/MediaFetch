@@ -51,7 +51,9 @@ def _download_sync(
     notify: Callable[[float, str], None],
 ) -> Path:
     formats = {
-        "best": "best[ext=mp4]/best",
+        # Prefer separate video/audio streams so "Best" really means the best
+        # available quality. FFmpeg is present in the Docker image for merging.
+        "best": "bestvideo+bestaudio/best",
         "720p": "bestvideo[height<=720][ext=mp4]+bestaudio/best[height<=720][ext=mp4]/best",
         "480p": "bestvideo[height<=480][ext=mp4]+bestaudio/best[height<=480][ext=mp4]/best",
         "audio": "bestaudio/best",
