@@ -86,6 +86,7 @@ Copy .env.example to .env.
 | ADMIN_IDS | empty | Comma-separated Telegram admin IDs |
 | FREE_DAILY_LIMIT | 10 | Free successful requests/day/user |
 | PREMIUM_DAILY_LIMIT | 100 | Premium successful requests/day/user |
+| PREMIUM_MAX_FILE_MB | 50 | Premium upload limit (capped by Telegram's current 50 MB cloud Bot API upload limit) |
 | CACHE_TTL_DAYS | 7 | Telegram file-id cache lifetime |
 | MAX_CAROUSEL_ITEMS | 10 | Maximum photos handled per post |
 | WEBHOOK_MODE | false | Enable Telegram webhook mode |
