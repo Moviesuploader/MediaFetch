@@ -67,6 +67,17 @@ class Storage:
         with self._lock:
             self._cache[key] = doc
 
+    def touch_user(self, user_id: int, username: str | None = None) -> None:
+        doc = {"user_id": user_id, "username": username, "updated_at": datetime.now(timezone.utc)}
+        if self._db is not None:
+            self._db.users.update_one({"user_id": user_id}, {"$set": doc}, upsert=True)
+
+    def user_ids(self) -> list[int]:
+        if self._db is not None:
+            return [int(doc["user_id"]) for doc in self._db.users.find({}, {"user_id": 1}) if doc.get("user_id")]
+        with self._lock:
+            return sorted({uid for uid, _ in self._usage} | set(self._premium))
+
     def increment_usage(self, user_id: int) -> int:
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if self._db is not None:
