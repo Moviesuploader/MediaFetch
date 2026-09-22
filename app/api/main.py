@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -12,7 +11,6 @@ logger = logging.getLogger("mediafetch")
 
 
 def _webhook_base_url() -> str:
-    # On Koyeb, always prefer the platform-provided public domain.
     if settings.koyeb_public_domain:
         return f"https://{settings.koyeb_public_domain.rstrip('/')}"
     if settings.public_base_url:
@@ -24,7 +22,6 @@ def _webhook_base_url() -> str:
 async def lifespan(app: FastAPI):
     bot = build_application()
     app.state.bot = bot
-    app.state.webhook_tasks = set()
 
     await bot.initialize()
     await bot.start()
@@ -36,10 +33,8 @@ async def lifespan(app: FastAPI):
                 "WEBHOOK_MODE requires KOYEB_PUBLIC_DOMAIN or PUBLIC_BASE_URL."
             )
 
-        # Do not generate an ephemeral secret here. A rolling Koyeb deployment can
-        # briefly have old and new instances receiving Telegram webhooks; an
-        # auto-generated per-process secret makes the old instance return 403.
-        # If WEBHOOK_SECRET is empty, Telegram's secret-token check is disabled.
+        # Keep this stable across rolling deployments. An empty secret disables
+        # secret-token validation and avoids old/new instance mismatches.
         webhook_secret = settings.webhook_secret.strip()
         app.state.webhook_secret = webhook_secret
         webhook_url = f"{webhook_base_url}/telegram/webhook"
@@ -51,6 +46,7 @@ async def lifespan(app: FastAPI):
         }
         if webhook_secret:
             webhook_kwargs["secret_token"] = webhook_secret
+
         await bot.bot.set_webhook(**webhook_kwargs)
         webhook_info = await bot.bot.get_webhook_info()
         logger.info(
@@ -70,11 +66,8 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    for task in list(app.state.webhook_tasks):
-        task.cancel()
-    if app.state.webhook_tasks:
-        await asyncio.gather(*app.state.webhook_tasks, return_exceptions=True)
-
+    # PTB owns update processing through update_queue. Its stop() waits for
+    # application tasks, so do not cancel webhook handler tasks here.
     if settings.webhook_mode:
         await bot.bot.delete_webhook(drop_pending_updates=False)
     elif bot.updater is not None:
@@ -96,17 +89,6 @@ async def health() -> dict[str, str]:
     }
 
 
-async def _process_webhook_update(update: Update) -> None:
-    try:
-        logger.info("Processing Telegram update: update_id=%s", update.update_id)
-        await app.state.bot.process_update(update)
-        logger.info("Finished Telegram update: update_id=%s", update.update_id)
-    except Exception:
-        logger.exception("Unhandled Telegram update processing error: update_id=%s", update.update_id)
-    finally:
-        app.state.webhook_tasks.discard(asyncio.current_task())
-
-
 @app.post("/telegram/webhook")
 async def telegram_webhook(
     request: Request,
@@ -120,10 +102,16 @@ async def telegram_webhook(
     payload = await request.json()
     update = Update.de_json(payload, app.state.bot.bot)
     logger.info(
-        "Telegram webhook update received: update_id=%s",
+        "Telegram webhook received: update_id=%s queue_before=%s",
         payload.get("update_id"),
+        app.state.bot.update_queue.qsize(),
     )
 
-    task = app.state.bot.create_task(_process_webhook_update(update), update=update)
-    app.state.webhook_tasks.add(task)
+    await app.state.bot.update_queue.put(update)
+
+    logger.info(
+        "Telegram update queued: update_id=%s queue_after=%s",
+        payload.get("update_id"),
+        app.state.bot.update_queue.qsize(),
+    )
     return {"ok": True}
