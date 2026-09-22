@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import secrets
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -37,16 +36,22 @@ async def lifespan(app: FastAPI):
                 "WEBHOOK_MODE requires KOYEB_PUBLIC_DOMAIN or PUBLIC_BASE_URL."
             )
 
-        webhook_secret = settings.webhook_secret or secrets.token_urlsafe(32)
+        # Do not generate an ephemeral secret here. A rolling Koyeb deployment can
+        # briefly have old and new instances receiving Telegram webhooks; an
+        # auto-generated per-process secret makes the old instance return 403.
+        # If WEBHOOK_SECRET is empty, Telegram's secret-token check is disabled.
+        webhook_secret = settings.webhook_secret.strip()
         app.state.webhook_secret = webhook_secret
         webhook_url = f"{webhook_base_url}/telegram/webhook"
 
-        await bot.bot.set_webhook(
-            url=webhook_url,
-            secret_token=webhook_secret,
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=False,
-        )
+        webhook_kwargs = {
+            "url": webhook_url,
+            "allowed_updates": Update.ALL_TYPES,
+            "drop_pending_updates": False,
+        }
+        if webhook_secret:
+            webhook_kwargs["secret_token"] = webhook_secret
+        await bot.bot.set_webhook(**webhook_kwargs)
         webhook_info = await bot.bot.get_webhook_info()
         logger.info(
             "Telegram webhook configured: url=%s pending=%s last_error=%s",
