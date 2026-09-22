@@ -60,6 +60,13 @@ class Storage:
                 return None
             return {"file_ids": list(item["file_ids"]), "metadata": dict(item.get("metadata") or {})}
 
+    def delete_cache(self, key: str) -> None:
+        if self._db is not None:
+            self._db.cache.delete_one({"key": key})
+            return
+        with self._lock:
+            self._cache.pop(key, None)
+
     def set_cache(self, key: str, file_ids: list[str], metadata: dict[str, Any]) -> None:
         doc = {"key": key, "file_ids": file_ids, "metadata": metadata, "created_at": time.time()}
         if self._db is not None:
