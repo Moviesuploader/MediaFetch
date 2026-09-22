@@ -1,8 +1,11 @@
 __pycache__
 .pytest_cache
 .git
+.github
 .gitignore
 .env
+.env.*
+!.env.example
 .venv
 venv
 tests
