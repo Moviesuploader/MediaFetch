@@ -9,6 +9,8 @@ from telegram.ext import (
 from app.bot.admin import (
     admin_command,
     broadcast_command,
+    cookies_clear,
+    cookies_command,
     maintenance_command,
     premium_command,
     revoke_premium,
@@ -62,6 +64,8 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("revoke", revoke_premium))
     application.add_handler(CommandHandler("maintenance", maintenance_command))
     application.add_handler(CommandHandler("broadcast", broadcast_command))
+    application.add_handler(CommandHandler("cookies", cookies_command))
+    application.add_handler(CommandHandler("cookies_clear", cookies_clear))
 
     application.add_handler(CallbackQueryHandler(download_choice, pattern=r"^mf:"))
     application.add_handler(
