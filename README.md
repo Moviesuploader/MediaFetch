@@ -12,7 +12,41 @@ A modular Telegram media downloader built with Python, FastAPI, Telegram Bot API
 6. The file is sent back to the user.
 7. Temporary files are cleaned up.
 
-Current platform detection covers YouTube, Instagram, Facebook, Reddit, X/Twitter, TikTok, Pinterest, and Threads. Actual download support depends on yt-dlp and the target platform.
+Current platform detection covers YouTube, Instagram, Facebook, Reddit, X/Twitter, TikTok, Pinterest, and Threads, including common short-link domains. The downloader uses yt-dlp for the major platforms, plus the 'yt-dlp-threads' plugin for public Threads posts. Actual availability can still change when a platform changes its site or applies access controls.
+
+## Downloader reliability
+
+- Latest compatible yt-dlp is installed at image build time.
+- yt-dlp[default] includes the current yt-dlp EJS challenge-solver package.
+- Deno 2.9.7 is included in the Docker image for YouTube JavaScript challenge solving.
+- Threads public video extraction uses the 'yt-dlp-threads' plugin because yt-dlp does not currently ship a built-in Threads extractor.
+- Best mode prefers separate best video + best audio streams and merges them with FFmpeg.
+- MP3 mode uses FFmpeg for audio extraction.
+- Per-user request rate limiting.
+- One active download per user.
+- Global download concurrency limit.
+- Configurable Telegram upload-size limit.
+- 30-second downloader socket timeout.
+- Temporary-file cleanup.
+- /health endpoint.
+- Platform-provided PORT support.
+- Telegram webhook mode for Koyeb scale-to-zero.
+- Automated compile/test CI.
+
+## Supported platforms
+
+| Platform | URL examples | Notes |
+|---|---|---|
+| YouTube | youtube.com, youtu.be | Deno/EJS enabled; some YouTube access controls may still require authentication or platform-provided tokens. |
+| Instagram | instagram.com | Public posts/Reels supported when yt-dlp can access them. |
+| Facebook | facebook.com, fb.watch | Public media where yt-dlp can extract it. |
+| Reddit | reddit.com, redd.it | Public media where available. |
+| X/Twitter | x.com, twitter.com | Public media where yt-dlp can extract it. |
+| TikTok | tiktok.com, vm.tiktok.com | Public media where available. |
+| Pinterest | pinterest.com, pin.it | Pins with downloadable media. |
+| Threads | threads.net, threads.com | Public video posts via the Threads extractor plugin. |
+
+This is not a promise that every URL on every platform will work. Social platforms frequently change their APIs, HTML, anti-bot systems, and access requirements. The correct behavior is to return a clear download error when the source cannot be accessed.
 
 ## Reliability and deployment features
 
@@ -22,9 +56,9 @@ Current platform detection covers YouTube, Instagram, Facebook, Reddit, X/Twitte
 - Configurable Telegram upload-size limit
 - 30-second downloader socket timeout
 - Temporary-file cleanup
-- Docker image with FFmpeg
-- `/health` endpoint
-- Platform-provided `PORT` support
+- Docker image with FFmpeg and Deno
+- /health endpoint
+- Platform-provided PORT support
 - Telegram webhook mode for Koyeb scale-to-zero
 - Automated compile/test CI
 
@@ -35,56 +69,52 @@ Koyeb Free provides 512 MB RAM, 0.1 vCPU and 2 GB SSD. Its Free Instance is a We
 Recommended Koyeb configuration:
 
 - Service type: Web Service
-- Deployment: GitHub repository `Moviesuploader/MediaFetch`, branch `main`
+- Deployment: GitHub repository 'Moviesuploader/MediaFetch', branch 'main'
 - Build: repository Dockerfile
 - Region: Frankfurt or Washington, D.C.
 - Instance: Free
 - Exposed port: 8000 / HTTP
-- Health check: HTTP GET `/health`
-- `MAX_CONCURRENT_DOWNLOADS=1`
+- Health check: HTTP GET /health
+- MAX_CONCURRENT_DOWNLOADS=1
 
 Environment variables:
 
 | Variable | Value |
 |---|---|
-| `BOT_TOKEN` | Telegram BotFather token |
-| `WEBHOOK_MODE` | `true` |
-| `MAX_CONCURRENT_DOWNLOADS` | `1` |
-| `DOWNLOAD_DIR` | `/tmp/mediafetch` |
-| `MAX_FILE_MB` | `50` |
-| `WEBHOOK_SECRET` | leave empty; generated automatically |
-| `PUBLIC_BASE_URL` | leave empty; Koyeb domain is detected automatically |
+| BOT_TOKEN | Telegram BotFather token |
+| WEBHOOK_MODE | true |
+| MAX_CONCURRENT_DOWNLOADS | 1 |
+| DOWNLOAD_DIR | /tmp/mediafetch |
+| MAX_FILE_MB | 50 |
+| WEBHOOK_SECRET | leave empty; generated automatically |
+| PUBLIC_BASE_URL | leave empty; Koyeb domain is detected automatically |
 
-Koyeb exposes `KOYEB_PUBLIC_DOMAIN`; MediaFetch automatically uses it to register the Telegram webhook at `/telegram/webhook`.
+Koyeb exposes KOYEB_PUBLIC_DOMAIN; MediaFetch automatically uses it to register the Telegram webhook at /telegram/webhook.
 
 ## Local setup
 
-Install Python 3.12+ and FFmpeg, create a Telegram bot with BotFather, copy `.env.example` to `.env`, set `BOT_TOKEN`, then run:
+Install Python 3.12+ and FFmpeg, create a Telegram bot with BotFather, copy .env.example to .env, set BOT_TOKEN, then run:
 
-```bash
 pip install -r requirements.txt
 python run.py
-```
 
-Local development defaults to Telegram long polling. Set `WEBHOOK_MODE=true` only when a public HTTPS endpoint is available.
+Local development defaults to Telegram long polling. Set WEBHOOK_MODE=true only when a public HTTPS endpoint is available.
 
-Health check: `GET /health`
+Health check: GET /health
 
 Tests:
 
-```bash
 pip install -r requirements-dev.txt
 python -m compileall -q app run.py
 pytest
-```
 
 ## Docker
 
-The Dockerfile installs FFmpeg and starts MediaFetch with `python run.py`. The application listens on port 8000 by default and honors the platform `PORT` variable.
+The Dockerfile installs FFmpeg and Deno and starts MediaFetch with python run.py. The application listens on port 8000 by default and honors the platform PORT variable.
 
 ## Resource note
 
-Koyeb Free has limited CPU/RAM/storage. Large media files and FFmpeg conversions may be slow or fail under the 512 MB / 0.1 vCPU limits. `/tmp/mediafetch` is ephemeral and should not be treated as permanent storage.
+Koyeb Free has limited CPU/RAM/storage. Large media files and FFmpeg conversions may be slow or fail under the 512 MB / 0.1 vCPU limits. /tmp/mediafetch is ephemeral and should not be treated as permanent storage.
 
 ## Important
 
