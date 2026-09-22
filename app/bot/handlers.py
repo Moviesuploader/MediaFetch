@@ -208,11 +208,12 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         finally:
             _DOWNLOAD_SLOTS.release()
 
-        size_mb = path.stat().st_size / (1024 * 1024)
-        if size_mb > settings.max_file_mb:
+        paths = path if isinstance(path, list) else [path]
+        total_size_mb = sum(item.stat().st_size for item in paths) / (1024 * 1024)
+        oversized = [item for item in paths if item.stat().st_size > settings.max_file_mb * 1024 * 1024]
+        if oversized:
             await status.edit_text(
-                f"⚠️ File size: {size_mb:.1f} MB. "
-                f"Limit: {settings.max_file_mb} MB."
+                f"⚠️ One or more files exceed the {settings.max_file_mb} MB limit."
             )
             return
 
@@ -221,11 +222,19 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             parse_mode="HTML",
         )
 
-        with path.open("rb") as media:
-            await query.message.reply_document(
-                document=media,
-                caption=f"✅ {platform} • {label} • {size_mb:.1f} MB",
+        for index, item in enumerate(paths, start=1):
+            size_mb = item.stat().st_size / (1024 * 1024)
+            caption = (
+                f"✅ {platform} • {label} • {size_mb:.1f} MB"
+                if len(paths) == 1
+                else f"✅ {platform} • Photo {index}/{len(paths)} • {size_mb:.1f} MB"
             )
+            # Send as a document to preserve the original HD image bytes.
+            with item.open("rb") as media:
+                await query.message.reply_document(
+                    document=media,
+                    caption=caption,
+                )
 
         await status.delete()
     except DownloadError:
@@ -242,9 +251,11 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
     finally:
         if path:
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            paths_to_remove = path if isinstance(path, list) else [path]
+            for item in paths_to_remove:
+                try:
+                    item.unlink(missing_ok=True)
+                except OSError:
+                    pass
         async with _ACTIVE_LOCK:
             _ACTIVE_USERS.discard(user_id)
