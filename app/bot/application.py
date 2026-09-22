@@ -1,7 +1,8 @@
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 from app.bot.handlers import (
     about,
+    download_choice,
     handle_url,
     help_command,
     start,
@@ -19,6 +20,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("about", about))
     application.add_handler(CommandHandler("supported", supported))
+    application.add_handler(CallbackQueryHandler(download_choice, pattern=r"^mf:"))
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url)
     )
