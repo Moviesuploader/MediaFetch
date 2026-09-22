@@ -3,6 +3,8 @@ from pathlib import Path
 
 import yt_dlp
 
+from app.core.config import settings
+
 
 class DownloadError(Exception):
     """Raised when media extraction or download fails."""
@@ -22,6 +24,8 @@ def _download_sync(url: str, output_dir: str) -> Path:
         "no_warnings": True,
         "restrictfilenames": True,
         "merge_output_format": "mp4",
+        "max_filesize": settings.max_file_mb * 1024 * 1024,
+        "socket_timeout": 30,
     }
 
     try:
