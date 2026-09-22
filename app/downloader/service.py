@@ -150,9 +150,12 @@ async def download_media(
     url: str,
     output_dir: str,
     mode: str = "best",
+    max_file_mb: int | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> Path | list[Path]:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
+    if max_file_mb is None:
+        max_file_mb = settings.max_file_mb
     loop = asyncio.get_running_loop()
 
     def notify(percent: float, label: str) -> None:
@@ -171,11 +174,12 @@ async def download_media(
         url,
         output_dir,
         mode,
+        max_file_mb,
         notify,
     )
 
 
-def _download_image(url: str, target: Path, headers: dict[str, str] | None = None) -> Path:
+def _download_image(url: str, target: Path, max_file_mb: int, headers: dict[str, str] | None = None) -> Path:
     request = urllib.request.Request(
         url,
         headers={"User-Agent": "Mozilla/5.0", **(headers or {})},
@@ -184,8 +188,8 @@ def _download_image(url: str, target: Path, headers: dict[str, str] | None = Non
         data = response.read()
         content_type = response.headers.get_content_type()
 
-    if len(data) > settings.max_file_mb * 1024 * 1024:
-        raise DownloadError(f"Image exceeds the {settings.max_file_mb} MB upload limit.")
+    if len(data) > max_file_mb * 1024 * 1024:
+        raise DownloadError(f"Image exceeds the {max_file_mb} MB upload limit.")
 
     extension = mimetypes.guess_extension(content_type) or Path(url.split("?", 1)[0]).suffix
     if extension.lower() not in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
@@ -247,6 +251,7 @@ def _download_images(
     info: dict,
     output_dir: str,
     notify: Callable[[float, str], None],
+    max_file_mb: int,
 ) -> list[Path]:
     entries = _image_entries(info)
     images: list[Path] = []
@@ -265,6 +270,7 @@ def _download_images(
         image_path = _download_image(
             thumbnail["url"],
             target,
+            max_file_mb,
             thumbnail.get("http_headers"),
         )
         images.append(image_path)
@@ -279,6 +285,7 @@ def _download_sync(
     url: str,
     output_dir: str,
     mode: str,
+    max_file_mb: int,
     notify: Callable[[float, str], None],
 ) -> Path | list[Path]:
     selector = _quality_selector(mode)
@@ -289,7 +296,7 @@ def _download_sync(
             "format": selector or "best",
             "noplaylist": True,
             "merge_output_format": "mp4",
-            "max_filesize": settings.max_file_mb * 1024 * 1024,
+            "max_filesize": max_file_mb * 1024 * 1024,
             "progress_hooks": [],
         }
     )
@@ -347,7 +354,7 @@ def _download_sync(
                 with yt_dlp.YoutubeDL(opts) as image_ydl:
                     info = image_ydl.extract_info(selected_url, download=False)
             notify(0, "fetching highest-resolution photo…")
-            return _download_images(info, output_dir, notify)
+            return _download_images(info, output_dir, notify, max_file_mb)
 
         # The extractor result was obtained from the selected URL, so process
         # that exact info object instead of re-extracting the original URL.
