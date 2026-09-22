@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 
 from telegram import Update
+from telegram.error import RetryAfter
 from telegram.ext import ContextTypes
 
 from app.core.config import settings
@@ -88,6 +89,15 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         try:
             await context.bot.copy_message(chat_id=target, from_chat_id=source.chat_id, message_id=source.message_id)
             sent += 1
+        except RetryAfter as exc:
+            await asyncio.sleep(float(exc.retry_after) + 0.5)
+            try:
+                await context.bot.copy_message(chat_id=target, from_chat_id=source.chat_id, message_id=source.message_id)
+                sent += 1
+            except Exception:
+                failed += 1
         except Exception:
             failed += 1
+        # Stay below Telegram's normal bulk-send rate limit.
+        await asyncio.sleep(0.05)
     await update.message.reply_text(f"📢 Broadcast finished. Sent: {sent} • Failed: {failed}")
