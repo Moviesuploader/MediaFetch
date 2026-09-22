@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     webhook_secret: str = ""
     public_base_url: str = ""
     koyeb_public_domain: str = ""
+    ytdlp_cookies_file: str = "/tmp/mediafetch-cookies.txt"
 
     # Optional persistence and service controls.
     mongodb_uri: str = ""
