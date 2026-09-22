@@ -98,9 +98,11 @@ async def health() -> dict[str, str]:
 
 async def _process_webhook_update(update: Update) -> None:
     try:
+        logger.info("Processing Telegram update: update_id=%s", update.update_id)
         await app.state.bot.process_update(update)
+        logger.info("Finished Telegram update: update_id=%s", update.update_id)
     except Exception:
-        logger.exception("Unhandled Telegram update processing error.")
+        logger.exception("Unhandled Telegram update processing error: update_id=%s", update.update_id)
     finally:
         app.state.webhook_tasks.discard(asyncio.current_task())
 
@@ -122,6 +124,6 @@ async def telegram_webhook(
         payload.get("update_id"),
     )
 
-    task = asyncio.create_task(_process_webhook_update(update))
+    task = app.state.bot.create_task(_process_webhook_update(update), update=update)
     app.state.webhook_tasks.add(task)
     return {"ok": True}
