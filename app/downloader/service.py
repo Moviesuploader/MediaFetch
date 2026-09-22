@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import mimetypes
 import time
+import logging
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,9 @@ from urllib.parse import urlsplit
 import yt_dlp
 
 from app.core.config import settings
+
+
+logger = logging.getLogger("mediafetch.downloader")
 
 
 class DownloadError(Exception):
@@ -198,7 +202,13 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
                 raise DownloadError("Extractor returned no media formats or images.")
             except Exception as exc:
                 last_error = exc
+                profile_name = "generic" if profile.get("allowed_extractors") else "native"
+                logger.warning(
+                    "yt-dlp extraction attempt failed platform=%s profile=%s url=%s error=%s",
+                    _platform_from_url(candidate), profile_name, candidate, exc,
+                )
 
+    logger.error("yt-dlp extraction failed after all fallbacks url=%s error=%s", url, last_error)
     raise last_error or DownloadError("Unable to extract media.")
 
 
