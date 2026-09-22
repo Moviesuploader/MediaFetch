@@ -40,7 +40,7 @@ class MediaInfo:
 
 
 def _base_opts() -> dict:
-    return {
+    opts = {
         "quiet": True,
         "no_warnings": True,
         "restrictfilenames": True,
@@ -48,6 +48,14 @@ def _base_opts() -> dict:
         "retries": 2,
         "fragment_retries": 2,
     }
+
+    # Optional admin-imported Netscape cookies. These are applied to every
+    # yt-dlp extraction/download when the cookie file is present.
+    cookie_file = Path(settings.ytdlp_cookies_file)
+    if cookie_file.is_file() and cookie_file.stat().st_size > 0:
+        opts["cookiefile"] = str(cookie_file)
+
+    return opts
 
 
 def _url_variants(url: str) -> list[str]:
