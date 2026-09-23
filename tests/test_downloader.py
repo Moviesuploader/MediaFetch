@@ -2,7 +2,7 @@ import unittest
 from urllib.parse import urlsplit
 
 from app.downloader.detector import detect_platform
-from app.downloader.service import _extract_profiles, _quality_selector, _url_variants
+from app.downloader.service import _extract_profiles, _platform_from_url, _quality_selector, _url_variants
 
 
 class DownloaderRoutingTests(unittest.TestCase):
@@ -49,6 +49,23 @@ class DownloaderRoutingTests(unittest.TestCase):
         self.assertEqual(profiles[0]["js_runtimes"], ["deno"])
         self.assertIn("ejs:github", profiles[0]["remote_components"])
 
+    def test_youtube_platform_profiles(self):
+        url = "https://www.youtube.com/watch?v=test"
+        self.assertEqual(_platform_from_url(url), "youtube")
+        profiles = _extract_profiles(url)
+        self.assertGreaterEqual(len(profiles), 3)
+        self.assertEqual(profiles[1]["extractor_args"]["youtube"]["player_client"], ["default", "web_embedded"])
+
+    def test_tiktok_platform_profile(self):
+        url = "https://www.tiktok.com/@user/video/123"
+        self.assertEqual(_platform_from_url(url), "tiktok")
+        profiles = _extract_profiles(url)
+        self.assertGreaterEqual(len(profiles), 2)
+        self.assertEqual(profiles[-1]["allowed_extractors"], ["generic"])
+
+    def test_instagram_embed_variant(self):
+        variants = _url_variants("https://www.instagram.com/reel/ABC123/?igsh=share")
+        self.assertTrue(any("/reel/ABC123/embed/" in item for item in variants))
     def test_quality_selector(self):
         self.assertEqual(_quality_selector("best"), "bv*+ba/b")
         self.assertEqual(_quality_selector("audio"), "bestaudio/best")
