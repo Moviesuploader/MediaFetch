@@ -21,6 +21,7 @@ from app.bot.handlers import (
     handle_url,
     help_command,
     premium_status,
+    history_command,
     start,
     supported,
 )
@@ -58,6 +59,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("about", about))
     application.add_handler(CommandHandler("supported", supported))
     application.add_handler(CommandHandler("premium", premium_status))
+    application.add_handler(CommandHandler("history", history_command))
 
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CommandHandler("premium_grant", premium_command))
