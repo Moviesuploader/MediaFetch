@@ -4,6 +4,9 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+import subprocess
+
+import yt_dlp
 
 from telegram import Update
 from telegram.error import RetryAfter
@@ -47,10 +50,34 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "/broadcast (reply to a message)\n"
         "/cookies (reply to cookies.txt)\n"
         "/cookies_clear",
+        "/diagnostics",
         parse_mode="HTML",
     )
 
 
+async def diagnostics_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id if update.effective_user else None
+    if not _is_admin(user_id) or not update.message:
+        return
+    try:
+        deno = subprocess.run(["deno", "--version"], capture_output=True, text=True, timeout=5).stdout.strip().splitlines()[0]
+    except Exception:
+        deno = "unavailable"
+    stats = await asyncio.to_thread(storage.stats)
+    platform_stats = await asyncio.to_thread(storage.platform_stats)
+    lines = [
+        "🩺 <b>MediaFetch diagnostics</b>",
+        f"yt-dlp: <code>{yt_dlp.version.__version__}</code>",
+        f"Deno: <code>{deno}</code>",
+        f"Storage: <code>{'MongoDB' if storage.persistent else 'memory fallback'}</code>",
+        f"Cookies: <code>{'loaded' if Path(settings.ytdlp_cookies_file).is_file() else 'not loaded'}</code>",
+        f"Downloads: <code>{stats['downloads']}</code> • failures: <code>{stats['failures']}</code>",
+    ]
+    if platform_stats:
+        lines.append("\n<b>Platforms</b>")
+        for row in platform_stats[:10]:
+            lines.append(f"• {row['platform']}: {row['downloads']} requests / {row['successes']} success")
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 async def premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id if update.effective_user else None
     if not _is_admin(user_id) or not update.message:
@@ -153,8 +180,9 @@ async def cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         # Validate the Netscape/Mozilla structure without logging sensitive values.
         raw = target.read_text(encoding="utf-8", errors="replace")
-        first_line = next((line.strip() for line in raw.splitlines() if line.strip()), "")
-        if first_line not in {"# HTTP Cookie File", "# Netscape HTTP Cookie File"}:
+        lines = [line.strip() for line in raw.splitlines() if line.strip()]
+        header_ok = any(line in {"# HTTP Cookie File", "# Netscape HTTP Cookie File"} for line in lines[:5])
+        if not header_ok:
             target.unlink(missing_ok=True)
             await message.reply_text(
                 "⚠️ Invalid cookies.txt format. The first line must be "
