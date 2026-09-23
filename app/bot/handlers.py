@@ -87,7 +87,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "2️⃣ I inspect the available media and qualities.\n"
         "3️⃣ Choose a quality.\n"
         "4️⃣ I download and send it back.\n\n"
-        "Commands: /start /help /supported /about /premium",
+        "Commands: /start /help /supported /about /premium /history",
         parse_mode="HTML",
     )
 
