@@ -51,8 +51,23 @@ def _base_opts() -> dict:
         "no_warnings": True,
         "restrictfilenames": True,
         "socket_timeout": 30,
-        "retries": 2,
-        "fragment_retries": 2,
+        "retries": 3,
+        "fragment_retries": 3,
+        "extractor_retries": 2,
+        "file_access_retries": 2,
+        "retry_sleep_functions": {
+            "http": "exp=1:8",
+            "fragment": "exp=1:8",
+            "extractor": "exp=1:8",
+        },
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/146.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+        },
         # Deno is already installed in the MediaFetch image. Allow yt-dlp to
         # fetch current EJS challenge components when the bundled package is
         # unavailable/outdated.
@@ -106,6 +121,12 @@ def _url_variants(url: str) -> list[str]:
             add_variant(raw_host, query=query)
             # Share/tracking parameters can change the HTML/API response.
             add_variant(raw_host, query={})
+            # Instagram sometimes exposes public media through the embed page
+            # even when the normal reel page is login-gated.
+            path_parts = [part for part in path.split("/") if part]
+            if len(path_parts) >= 2 and path_parts[0] in {"reel", "p", "tv"}:
+                embed_path = f"/{path_parts[0]}/{path_parts[1]}/embed/"
+                add_variant(raw_host, new_path=embed_path, query={})
 
         # Facebook sometimes serves a different response shape from the
         # mobile host. Retry the same public URL on m.facebook.com.
@@ -152,6 +173,10 @@ def _platform_from_url(url: str) -> str:
         return "reddit"
     if host in {"x.com", "twitter.com"} or host.endswith(".x.com") or host.endswith(".twitter.com"):
         return "x"
+    if host in {"youtube.com", "youtu.be", "youtube-nocookie.com"} or host.endswith(".youtube.com"):
+        return "youtube"
+    if host in {"tiktok.com", "vm.tiktok.com"} or host.endswith(".tiktok.com"):
+        return "tiktok"
     return "generic"
 
 
@@ -164,10 +189,21 @@ def _extract_profiles(url: str) -> list[dict]:
     """
     platform = _platform_from_url(url)
     profiles = [_base_opts()]
-    if platform in {"facebook", "instagram", "threads", "pinterest", "reddit", "x"}:
+    if platform in {"facebook", "instagram", "threads", "pinterest", "reddit", "x", "tiktok"}:
         generic = _base_opts()
         generic["allowed_extractors"] = ["generic"]
         profiles.append(generic)
+
+    if platform == "youtube":
+        # YouTube periodically changes which logged-out player clients expose
+        # downloadable formats. Retry documented client combinations.
+        for clients in (["default", "web_embedded"], ["default", "mweb"]):
+            youtube_profile = _base_opts()
+            youtube_profile["extractor_args"] = {
+                "youtube": {"player_client": clients},
+            }
+            profiles.append(youtube_profile)
+
     if platform == "instagram":
         # Instagram may require browser-like TLS fingerprints for some
         # public requests. Scope impersonation to the Instagram generic
@@ -299,16 +335,20 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
                             info = ydl.extract_info(candidate, download=False)
                         opts = playlist_opts
 
-                # Do not stop on a metadata-only result. This is what lets the
-                # generic OpenGraph/direct-media fallback run when a site's
-                # dedicated extractor returns a shell page with no formats.
-                if (
-                    _has_video_format(info)
-                    or _best_thumbnail(info)
-                    or _image_entries(info)
+                # A thumbnail is not proof that a video is downloadable.
+                # Continue through alternate player clients when an extractor
+                # returns metadata but no usable video formats.
+                if _has_video_format(info):
+                    return info, candidate, opts
+
+                # Image-only posts and carousels are valid non-video media.
+                candidate_platform = _platform_from_url(candidate)
+                if candidate_platform in {"instagram", "pinterest"} and (
+                    _best_thumbnail(info) or _image_entries(info)
                 ):
                     return info, candidate, opts
-                raise DownloadError("Extractor returned no media formats or images.")
+
+                raise DownloadError("Extractor returned no downloadable media formats.")
             except Exception as exc:
                 last_error = exc
                 profile_name = "generic" if profile.get("allowed_extractors") else "native"

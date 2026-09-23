@@ -87,7 +87,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "2️⃣ I inspect the available media and qualities.\n"
         "3️⃣ Choose a quality.\n"
         "4️⃣ I download and send it back.\n\n"
-        "Commands: /start /help /supported /about /premium",
+        "Commands: /start /help /supported /about /premium /history",
         parse_mode="HTML",
     )
 
@@ -136,6 +136,22 @@ async def premium_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
 
 
+async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    user_id = update.effective_user.id if update.effective_user else update.message.chat_id
+    items = await asyncio.to_thread(storage.history, user_id, 10)
+    if not items:
+        await update.message.reply_text("📜 No download history yet.")
+        return
+    lines = ["📜 <b>Your recent downloads</b>"]
+    for index, item in enumerate(items, start=1):
+        title = str(item.get("title") or "Media").replace("<", "&lt;").replace(">", "&gt;")[:70]
+        mode = str(item.get("mode") or "best")
+        platform = str(item.get("platform") or "Unknown")
+        state = "✅" if item.get("success") else "❌"
+        lines.append(f"{index}. {state} <b>{platform}</b> • {mode} • {title}")
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
         return
@@ -324,6 +340,12 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     await query.message.reply_document(document=file_id, caption=caption)
                 await asyncio.to_thread(storage.increment_usage, user_id)
                 await asyncio.to_thread(storage.record_event, user_id, platform, True, 0, True)
+                await asyncio.to_thread(
+                    storage.record_history,
+                    user_id, platform, url,
+                    (info.title if isinstance(info, MediaInfo) else "Media"),
+                    mode, True, cached_size,
+                )
                 return
             except Exception:
                 await asyncio.to_thread(storage.delete_cache, _cache_key(url, mode))
@@ -407,10 +429,20 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         await asyncio.to_thread(storage.increment_usage, user_id)
         await asyncio.to_thread(storage.record_event, user_id, platform, True, size_bytes, cache_hit)
+        await asyncio.to_thread(
+            storage.record_history, user_id, platform, url,
+            (info.title if isinstance(info, MediaInfo) else "Media"),
+            mode, True, size_bytes,
+        )
         await status.delete()
     except DownloadError as exc:
         logger.warning("Download failed user=%s platform=%s mode=%s error=%s", user_id, platform, mode, exc)
         await asyncio.to_thread(storage.record_event, user_id, platform, False, 0, cache_hit)
+        await asyncio.to_thread(
+            storage.record_history, user_id, platform, url,
+            (info.title if isinstance(info, MediaInfo) else "Media"),
+            mode, False, 0,
+        )
         if status:
             await status.edit_text(
                 "❌ <b>Download failed.</b>\n"
