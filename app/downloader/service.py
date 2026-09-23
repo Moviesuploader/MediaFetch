@@ -51,8 +51,23 @@ def _base_opts() -> dict:
         "no_warnings": True,
         "restrictfilenames": True,
         "socket_timeout": 30,
-        "retries": 2,
-        "fragment_retries": 2,
+        "retries": 3,
+        "fragment_retries": 3,
+        "extractor_retries": 2,
+        "file_access_retries": 2,
+        "retry_sleep_functions": {
+            "http": "exp=1:8",
+            "fragment": "exp=1:8",
+            "extractor": "exp=1:8",
+        },
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/146.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+        },
         # Deno is already installed in the MediaFetch image. Allow yt-dlp to
         # fetch current EJS challenge components when the bundled package is
         # unavailable/outdated.
@@ -164,10 +179,21 @@ def _extract_profiles(url: str) -> list[dict]:
     """
     platform = _platform_from_url(url)
     profiles = [_base_opts()]
-    if platform in {"facebook", "instagram", "threads", "pinterest", "reddit", "x"}:
+    if platform in {"facebook", "instagram", "threads", "pinterest", "reddit", "x", "tiktok"}:
         generic = _base_opts()
         generic["allowed_extractors"] = ["generic"]
         profiles.append(generic)
+
+    if platform == "youtube":
+        # YouTube periodically changes which logged-out player clients expose
+        # downloadable formats. Retry documented client combinations.
+        for clients in (["default", "web_embedded"], ["default", "mweb"]):
+            youtube_profile = _base_opts()
+            youtube_profile["extractor_args"] = {
+                "youtube": {"player_client": clients},
+            }
+            profiles.append(youtube_profile)
+
     if platform == "instagram":
         # Instagram may require browser-like TLS fingerprints for some
         # public requests. Scope impersonation to the Instagram generic
@@ -299,16 +325,20 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
                             info = ydl.extract_info(candidate, download=False)
                         opts = playlist_opts
 
-                # Do not stop on a metadata-only result. This is what lets the
-                # generic OpenGraph/direct-media fallback run when a site's
-                # dedicated extractor returns a shell page with no formats.
-                if (
-                    _has_video_format(info)
-                    or _best_thumbnail(info)
-                    or _image_entries(info)
+                # A thumbnail is not proof that a video is downloadable.
+                # Continue through alternate player clients when an extractor
+                # returns metadata but no usable video formats.
+                if _has_video_format(info):
+                    return info, candidate, opts
+
+                # Image-only posts and carousels are valid non-video media.
+                candidate_platform = _platform_from_url(candidate)
+                if candidate_platform in {"instagram", "pinterest"} and (
+                    _best_thumbnail(info) or _image_entries(info)
                 ):
                     return info, candidate, opts
-                raise DownloadError("Extractor returned no media formats or images.")
+
+                raise DownloadError("Extractor returned no downloadable media formats.")
             except Exception as exc:
                 last_error = exc
                 profile_name = "generic" if profile.get("allowed_extractors") else "native"
