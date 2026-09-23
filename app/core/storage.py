@@ -21,6 +21,7 @@ class Storage:
         self._premium: dict[int, float] = {}
         self._users: set[int] = set()
         self._stats = {"downloads": 0, "cache_hits": 0, "failures": 0, "bytes": 0}
+        self._history: dict[int, list[dict[str, Any]]] = {}
         self._client = None
         self._db = None
         try:
@@ -32,6 +33,7 @@ class Storage:
                 self._db.users.create_index("user_id", unique=True)
                 self._db.usage.create_index([("user_id", 1), ("day", 1)], unique=True)
                 self._db.events.create_index("created_at")
+            self._db.history.create_index([("user_id", 1), ("created_at", -1)])
         except Exception:
             self._client = None
             self._db = None
@@ -163,6 +165,62 @@ class Storage:
                 self._stats["cache_hits"] += 1
             if not success:
                 self._stats["failures"] += 1
+
+    def record_history(
+        self,
+        user_id: int,
+        platform: str,
+        url: str,
+        title: str,
+        mode: str,
+        success: bool,
+        size_bytes: int = 0,
+    ) -> None:
+        doc = {
+            "user_id": user_id,
+            "platform": platform,
+            "url": url[:2000],
+            "title": title[:300],
+            "mode": mode[:40],
+            "success": bool(success),
+            "size_bytes": int(max(size_bytes, 0)),
+            "created_at": datetime.now(timezone.utc),
+        }
+        if self._db is not None:
+            self._db.history.insert_one(doc)
+            stale = list(self._db.history.find({"user_id": user_id}, {"_id": 1}).sort("created_at", -1).skip(50))
+            if stale:
+                self._db.history.delete_many({"_id": {"$in": [item["_id"] for item in stale]}})
+            return
+        with self._lock:
+            items = self._history.setdefault(user_id, [])
+            items.insert(0, doc)
+            del items[50:]
+
+    def history(self, user_id: int, limit: int = 10) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 50))
+        if self._db is not None:
+            return list(self._db.history.find({"user_id": user_id}, {"_id": 0}).sort("created_at", -1).limit(limit))
+        with self._lock:
+            return [dict(item) for item in self._history.get(user_id, [])[:limit]]
+
+    def platform_stats(self) -> list[dict[str, Any]]:
+        if self._db is not None:
+            pipeline = [
+                {"$group": {"_id": "$platform", "downloads": {"$sum": 1}, "successes": {"$sum": {"$cond": ["$success", 1, 0]}}, "bytes": {"$sum": "$size_bytes"}}},
+                {"$sort": {"downloads": -1}},
+            ]
+            return [{"platform": item.get("_id", "Unknown"), "downloads": int(item.get("downloads", 0)), "successes": int(item.get("successes", 0)), "bytes": int(item.get("bytes", 0))} for item in self._db.events.aggregate(pipeline)]
+        with self._lock:
+            result: dict[str, dict[str, int]] = {}
+            for items in self._history.values():
+                for item in items:
+                    platform = item.get("platform", "Unknown")
+                    row = result.setdefault(platform, {"downloads": 0, "successes": 0, "bytes": 0})
+                    row["downloads"] += 1
+                    row["successes"] += int(bool(item.get("success")))
+                    row["bytes"] += int(item.get("size_bytes", 0) or 0)
+            return [{"platform": p, **v} for p, v in sorted(result.items(), key=lambda pair: pair[1]["downloads"], reverse=True)]
 
     def set_maintenance(self, enabled: bool) -> None:
         if self._db is not None:
