@@ -29,6 +29,21 @@ class DownloaderRoutingTests(unittest.TestCase):
         self.assertGreaterEqual(len(profiles), 2)
         self.assertEqual(profiles[-1]["allowed_extractors"], ["generic"])
 
+    def test_instagram_has_impersonated_generic_fallback(self):
+        profiles = _extract_profiles("https://www.instagram.com/reel/123/")
+        self.assertGreaterEqual(len(profiles), 3)
+        self.assertEqual(profiles[-1]["allowed_extractors"], ["generic"])
+        self.assertEqual(
+            profiles[-1]["extractor_args"],
+            {"generic": {"impersonate": "chrome"}},
+        )
+
+    def test_instagram_clean_url_variant(self):
+        url = "https://www.instagram.com/reel/ABC123/?igsh=share-token&img_index=1"
+        variants = _url_variants(url)
+        self.assertEqual(variants[0], url)
+        self.assertTrue(any(item.endswith("/reel/ABC123/") for item in variants))
+
     def test_ejs_runtime_is_enabled(self):
         profiles = _extract_profiles("https://www.youtube.com/watch?v=test")
         self.assertEqual(profiles[0]["js_runtimes"], ["deno"])

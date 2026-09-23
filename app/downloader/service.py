@@ -5,10 +5,11 @@ import mimetypes
 import time
 import logging
 import urllib.request
+from html.parser import HTMLParser
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import yt_dlp
 
@@ -103,6 +104,8 @@ def _url_variants(url: str) -> list[str]:
             query.pop("img_index", None)
             query.pop("stkn", None)
             add_variant(raw_host, query=query)
+            # Share/tracking parameters can change the HTML/API response.
+            add_variant(raw_host, query={})
 
         # Facebook sometimes serves a different response shape from the
         # mobile host. Retry the same public URL on m.facebook.com.
@@ -165,7 +168,113 @@ def _extract_profiles(url: str) -> list[dict]:
         generic = _base_opts()
         generic["allowed_extractors"] = ["generic"]
         profiles.append(generic)
+    if platform == "instagram":
+        # Instagram may require browser-like TLS fingerprints for some
+        # public requests. Scope impersonation to the Instagram generic
+        # fallback so other platforms keep the normal request path.
+        instagram_generic = _base_opts()
+        instagram_generic["allowed_extractors"] = ["generic"]
+        instagram_generic["extractor_args"] = {
+            "generic": {"impersonate": "chrome"},
+        }
+        profiles.append(instagram_generic)
     return profiles
+
+
+class _OpenGraphParser(HTMLParser):
+    """Extract public OpenGraph metadata without authentication."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.values: dict[str, str] = {}
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() != "meta":
+            return
+        data = {str(key).lower(): value for key, value in attrs if value is not None}
+        key = data.get("property") or data.get("name")
+        content = data.get("content")
+        if key and content and key.lower() in {
+            "og:title",
+            "og:description",
+            "og:image",
+            "og:video",
+            "og:video:url",
+            "og:video:secure_url",
+            "og:video:type",
+            "og:video:width",
+            "og:video:height",
+        }:
+            self.values.setdefault(key.lower(), content.strip())
+
+
+def _instagram_web_fallback(url: str) -> tuple[dict, str, dict] | None:
+    """Recover public Instagram video from page metadata when its API path breaks."""
+    try:
+        user_agent = (
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/146.0 Safari/537.36"
+        )
+        request = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": user_agent,
+                "Accept": "text/html,application/xhtml+xml",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            html = response.read(6 * 1024 * 1024).decode("utf-8", "replace")
+        parser = _OpenGraphParser()
+        parser.feed(html)
+
+        video_url = (
+            parser.values.get("og:video:secure_url")
+            or parser.values.get("og:video:url")
+            or parser.values.get("og:video")
+        )
+        if not video_url:
+            return None
+        video_url = urljoin(url, video_url)
+        if urlsplit(video_url).scheme not in {"http", "https"}:
+            return None
+
+        post_id = next(
+            (part for part in urlsplit(url).path.split("/") if part),
+            "instagram",
+        )
+        title = parser.values.get("og:title") or "Instagram video"
+        fmt: dict = {
+            "format_id": "instagram-og",
+            "url": video_url,
+            "ext": "mp4",
+            "vcodec": "unknown",
+            "acodec": "unknown",
+            "protocol": urlsplit(video_url).scheme,
+            "http_headers": {
+                "User-Agent": user_agent,
+                "Referer": url,
+            },
+        }
+        for key, field in (("og:video:width", "width"), ("og:video:height", "height")):
+            value = parser.values.get(key)
+            if value and value.isdigit():
+                fmt[field] = int(value)
+
+        return {
+            "id": post_id,
+            "title": title,
+            "webpage_url": url,
+            "thumbnail": parser.values.get("og:image"),
+            "formats": [fmt],
+        }, url, _base_opts()
+    except Exception as exc:
+        logger.warning(
+            "Instagram public-page fallback failed error_type=%s error=%s",
+            type(exc).__name__,
+            exc,
+        )
+        return None
 
 
 def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
@@ -207,6 +316,13 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
                     "yt-dlp extraction attempt failed platform=%s profile=%s url=%s error=%s",
                     _platform_from_url(candidate), profile_name, candidate, exc,
                 )
+
+    if _platform_from_url(url) == "instagram":
+        for candidate in _url_variants(url):
+            fallback = _instagram_web_fallback(candidate)
+            if fallback:
+                logger.info("Instagram public-page fallback succeeded url=%s", candidate)
+                return fallback
 
     logger.error("yt-dlp extraction failed after all fallbacks url=%s error=%s", url, last_error)
     raise last_error or DownloadError("Unable to extract media.")

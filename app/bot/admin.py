@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -9,6 +10,9 @@ from telegram.error import RetryAfter
 from telegram.ext import ContextTypes
 
 from app.core.config import settings
+
+
+logger = logging.getLogger("mediafetch.admin")
 from app.core.storage import storage
 
 
@@ -147,17 +151,29 @@ async def cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await message.reply_text("⚠️ Cookie file is empty or larger than 5 MB.")
             return
 
-        # Basic Netscape-cookie validation without logging the sensitive contents.
+        # Validate the Netscape/Mozilla structure without logging sensitive values.
         raw = target.read_text(encoding="utf-8", errors="replace")
+        first_line = next((line.strip() for line in raw.splitlines() if line.strip()), "")
+        if first_line not in {"# HTTP Cookie File", "# Netscape HTTP Cookie File"}:
+            target.unlink(missing_ok=True)
+            await message.reply_text(
+                "⚠️ Invalid cookies.txt format. The first line must be "
+                "<code># Netscape HTTP Cookie File</code> or "
+                "<code># HTTP Cookie File</code>.",
+                parse_mode="HTML",
+            )
+            return
+
         valid_rows = sum(
-            1 for line in raw.splitlines()
-            if line.strip() and not line.lstrip().startswith("#") and len(line.split("\t")) >= 7
+            1
+            for line in raw.splitlines()
+            if line.strip()
+            and not line.lstrip().startswith("#")
+            and len(line.split("\t")) >= 7
         )
         if valid_rows == 0:
             target.unlink(missing_ok=True)
-            await message.reply_text(
-                "⚠️ This does not look like a Netscape-format cookies.txt file."
-            )
+            await message.reply_text("⚠️ No valid Netscape cookie rows were found in this file.")
             return
 
         await message.reply_text(
@@ -166,10 +182,16 @@ async def cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "yt-dlp will use them for supported extractors.",
             parse_mode="HTML",
         )
-    except Exception:
+    except Exception as exc:
         Path(settings.ytdlp_cookies_file).unlink(missing_ok=True)
+        logger.exception(
+            "Cookie import failed user=%s error_type=%s",
+            user_id,
+            type(exc).__name__,
+        )
         await message.reply_text(
-            "❌ Cookie import failed. Please export a fresh Netscape-format cookies.txt and try again."
+            "❌ Cookie import failed while downloading or reading the file. "
+            "Please try sending the exported cookies.txt again."
         )
 
 
