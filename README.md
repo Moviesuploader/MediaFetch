@@ -48,6 +48,7 @@ User commands:
 - /supported
 - /about
 - /premium
+- /history — recent download history
 
 Admin commands (only IDs in ADMIN_IDS):
 - /admin
@@ -55,6 +56,7 @@ Admin commands (only IDs in ADMIN_IDS):
 - /revoke USER_ID
 - /maintenance on|off
 - /broadcast — reply to the message that should be broadcast.
+- /diagnostics — admin-only runtime, extractor, storage and platform diagnostics.
 
 ## Supported platforms
 
@@ -140,6 +142,12 @@ pytest
 ~~~
 
 CI also builds the Docker image.
+
+## Phase 3 additions
+
+- Persistent per-user recent download history (MongoDB or memory fallback).
+- Admin runtime diagnostics including yt-dlp/Deno/storage/cookie state and platform analytics.
+- YouTube player-client fallback routing and Instagram embed-page fallback routing for transient extractor regressions.
 
 ## Downloader reliability
 
