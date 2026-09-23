@@ -121,6 +121,12 @@ def _url_variants(url: str) -> list[str]:
             add_variant(raw_host, query=query)
             # Share/tracking parameters can change the HTML/API response.
             add_variant(raw_host, query={})
+            # Instagram sometimes exposes public media through the embed page
+            # even when the normal reel page is login-gated.
+            path_parts = [part for part in path.split("/") if part]
+            if len(path_parts) >= 2 and path_parts[0] in {"reel", "p", "tv"}:
+                embed_path = f"/{path_parts[0]}/{path_parts[1]}/embed/"
+                add_variant(raw_host, new_path=embed_path, query={})
 
         # Facebook sometimes serves a different response shape from the
         # mobile host. Retry the same public URL on m.facebook.com.
