@@ -11,10 +11,15 @@ logger = logging.getLogger("mediafetch")
 
 
 def _webhook_base_url() -> str:
-    if settings.koyeb_public_domain:
-        return f"https://{settings.koyeb_public_domain.rstrip('/')}"
+    # Explicit URL wins on any hosting provider. Antideploy exposes the app
+    # over HTTPS but does not document a built-in public-URL environment
+    # variable, so PUBLIC_BASE_URL or ANTIDEPLOY_PUBLIC_URL must be set there.
     if settings.public_base_url:
         return settings.public_base_url.rstrip("/")
+    if settings.antideploy_public_url:
+        return settings.antideploy_public_url.rstrip("/")
+    if settings.koyeb_public_domain:
+        return f"https://{settings.koyeb_public_domain.rstrip('/')}"
     return ""
 
 
@@ -23,15 +28,17 @@ async def lifespan(app: FastAPI):
     bot = build_application()
     app.state.bot = bot
 
+    webhook_base_url = _webhook_base_url() if settings.webhook_mode else ""
+    if settings.webhook_mode and not webhook_base_url:
+        raise RuntimeError(
+            "WEBHOOK_MODE requires PUBLIC_BASE_URL, ANTIDEPLOY_PUBLIC_URL, "
+            "or KOYEB_PUBLIC_DOMAIN."
+        )
+
     await bot.initialize()
     await bot.start()
 
     if settings.webhook_mode:
-        webhook_base_url = _webhook_base_url()
-        if not webhook_base_url:
-            raise RuntimeError(
-                "WEBHOOK_MODE requires KOYEB_PUBLIC_DOMAIN or PUBLIC_BASE_URL."
-            )
 
         # Keep this stable across rolling deployments. An empty secret disables
         # secret-token validation and avoids old/new instance mismatches.

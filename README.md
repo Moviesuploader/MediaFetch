@@ -23,7 +23,7 @@ A modular Telegram public-media downloader built with Python, FastAPI, Telegram 
 - Metadata inspection before download: title, duration, uploader, available resolutions and carousel count.
 - Supported-platform validation before yt-dlp work.
 - Retry settings for transient extractor/download failures.
-- Koyeb-compatible FastAPI webhook mode.
+- Portable FastAPI webhook mode for Koyeb and Antideploy.
 - /health endpoint.
 - Docker image with FFmpeg and Deno for current yt-dlp JavaScript challenge solving.
 - Automated compile/test and Docker-build CI.
@@ -90,8 +90,8 @@ Copy .env.example to .env.
 | CACHE_TTL_DAYS | 7 | Telegram file-id cache lifetime |
 | MAX_CAROUSEL_ITEMS | 10 | Maximum photos handled per post |
 | WEBHOOK_MODE | false | Enable Telegram webhook mode |
-| WEBHOOK_SECRET | empty | Generated automatically when empty |
-| PUBLIC_BASE_URL | empty | Optional explicit webhook base URL |
+| WEBHOOK_SECRET | empty | Optional Telegram webhook secret |
+| PUBLIC_BASE_URL | empty | Explicit public HTTPS base URL for the webhook; recommended on generic hosts |\n| ANTIDEPLOY_PUBLIC_URL | empty | Antideploy app HTTPS URL used when PUBLIC_BASE_URL is empty |
 
 ## Koyeb deployment
 
@@ -107,6 +107,16 @@ Recommended:
 - MAX_CONCURRENT_DOWNLOADS=1
 
 Koyeb exposes KOYEB_PUBLIC_DOMAIN, which MediaFetch uses automatically for the Telegram webhook.
+
+## Antideploy deployment
+
+Antideploy provides HTTPS and can run this Docker-based service. Because Antideploy does not document a public-URL environment variable for applications, configure:
+- `WEBHOOK_MODE=true`
+- `ANTIDEPLOY_PUBLIC_URL=https://<your-app>.antideploy.com`
+- `WEBHOOK_SECRET=` (or a stable secret of your choice)
+- `MAX_CONCURRENT_DOWNLOADS=1`
+
+The app listens on `PORT` (default 8000) and exposes `GET /health`. Antideploy's filesystem is ephemeral, so `/tmp/mediafetch` is intentionally temporary; configure MongoDB if you need persistent users, limits, cache and analytics. Antideploy currently provides 1 vCPU / 1 GiB per application and scales idle applications to zero, so webhook mode is preferred over Telegram polling there.
 
 MongoDB is optional. For a persistent production cache, usage limits and analytics, configure MONGODB_URI.
 
