@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     webhook_secret: str = ""
     public_base_url: str = ""
     koyeb_public_domain: str = ""
+    # Optional public HTTPS base URL for hosts such as Antideploy.
+    antideploy_public_url: str = ""
     ytdlp_cookies_file: str = "/tmp/mediafetch-cookies.txt"
 
     # Optional persistence and service controls.
