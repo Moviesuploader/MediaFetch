@@ -167,6 +167,10 @@ def _platform_from_url(url: str) -> str:
         return "reddit"
     if host in {"x.com", "twitter.com"} or host.endswith(".x.com") or host.endswith(".twitter.com"):
         return "x"
+    if host in {"youtube.com", "youtu.be", "youtube-nocookie.com"} or host.endswith(".youtube.com"):
+        return "youtube"
+    if host in {"tiktok.com", "vm.tiktok.com"} or host.endswith(".tiktok.com"):
+        return "tiktok"
     return "generic"
 
 
