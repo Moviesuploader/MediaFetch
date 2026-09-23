@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
 
-import yt_dlp
+from yt_dlp.version import __version__ as YTDLP_VERSION
 
 from telegram import Update
 from telegram.error import RetryAfter
@@ -67,7 +67,7 @@ async def diagnostics_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     platform_stats = await asyncio.to_thread(storage.platform_stats)
     lines = [
         "🩺 <b>MediaFetch diagnostics</b>",
-        f"yt-dlp: <code>{yt_dlp.version.__version__}</code>",
+        f"yt-dlp: <code>{YTDLP_VERSION}</code>",
         f"Deno: <code>{deno}</code>",
         f"Storage: <code>{'MongoDB' if storage.persistent else 'memory fallback'}</code>",
         f"Cookies: <code>{'loaded' if Path(settings.ytdlp_cookies_file).is_file() else 'not loaded'}</code>",
