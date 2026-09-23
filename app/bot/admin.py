@@ -49,7 +49,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "/maintenance on|off\n"
         "/broadcast (reply to a message)\n"
         "/cookies (reply to cookies.txt)\n"
-        "/cookies_clear",
+        "/cookies_clear\n"
         "/diagnostics",
         parse_mode="HTML",
     )
