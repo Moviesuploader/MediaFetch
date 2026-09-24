@@ -22,6 +22,7 @@ class Storage:
         self._users: set[int] = set()
         self._stats = {"downloads": 0, "cache_hits": 0, "failures": 0, "bytes": 0}
         self._history: dict[int, list[dict[str, Any]]] = {}
+        self._file_limits = {"free": 100, "premium": 500, "admin": 2000}
         self._client = None
         self._db = None
         try:
@@ -221,6 +222,36 @@ class Storage:
                     row["successes"] += int(bool(item.get("success")))
                     row["bytes"] += int(item.get("size_bytes", 0) or 0)
             return [{"platform": p, **v} for p, v in sorted(result.items(), key=lambda pair: pair[1]["downloads"], reverse=True)]
+
+    def file_limits(self) -> dict[str, int]:
+        defaults = dict(self._file_limits)
+        if self._db is not None:
+            doc = self._db.settings.find_one({"key": "file_limits"})
+            if doc:
+                for key in defaults:
+                    try:
+                        defaults[key] = max(1, int(doc.get(key, defaults[key])))
+                    except (TypeError, ValueError):
+                        pass
+            return defaults
+        with self._lock:
+            return dict(self._file_limits)
+
+    def set_file_limit(self, role: str, mb: int) -> dict[str, int]:
+        role = role.lower().strip()
+        if role not in {"free", "premium", "admin"}:
+            raise ValueError("role must be free, premium or admin")
+        mb = max(1, min(int(mb), 2000))
+        if self._db is not None:
+            self._db.settings.update_one(
+                {"key": "file_limits"},
+                {"$set": {"key": "file_limits", role: mb}},
+                upsert=True,
+            )
+            return self.file_limits()
+        with self._lock:
+            self._file_limits[role] = mb
+            return dict(self._file_limits)
 
     def set_maintenance(self, enabled: bool) -> None:
         if self._db is not None:
