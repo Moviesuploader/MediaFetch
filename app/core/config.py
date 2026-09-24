@@ -13,6 +13,13 @@ class Settings(BaseSettings):
     # Optional public HTTPS base URL for hosts such as Antideploy.
     antideploy_public_url: str = ""
     ytdlp_cookies_file: str = "/tmp/mediafetch-cookies.txt"
+    # Comma-separated platforms allowed to use imported cookies. Keep social
+    # platforms cookie-free by default; YouTube is the common cookie-dependent case.
+    ytdlp_cookie_platforms: str = "youtube"
+    ytdlp_max_retries: int = 2
+    extraction_timeout_seconds: int = 60
+    download_timeout_seconds: int = 900
+    max_download_bytes: int = 52428800
 
     # Optional persistence and service controls.
     mongodb_uri: str = ""
