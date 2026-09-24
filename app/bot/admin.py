@@ -28,6 +28,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not _is_admin(user_id) or not update.message:
         return
     stats = await asyncio.to_thread(storage.stats)
+    limits = await asyncio.to_thread(storage.file_limits)
     mode = "MongoDB" if storage.persistent else "memory fallback"
     cookie_status = (
         "🟢 Loaded"
@@ -42,10 +43,15 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"💾 Data processed: <b>{stats['bytes'] / (1024 * 1024):.1f} MB</b>\n"
         f"👥 Known users: <b>{len(await asyncio.to_thread(storage.user_ids))}</b>\n"
         f"🗄 Storage: <b>{mode}</b>\n"
-        f"🍪 yt-dlp cookies: <b>{cookie_status}</b>\n\n"
+        f"🍪 yt-dlp cookies: <b>{cookie_status}</b>\n"
+        f"📦 Free limit: <b>{limits['free']} MB</b>\n"
+        f"💎 Premium limit: <b>{limits['premium']} MB</b>\n"
+        f"👑 Admin limit: <b>{limits['admin']} MB</b>\n"
+        f"📡 Large-upload API: <b>{'Local Bot API' if settings.telegram_api_base_url else 'Official 50 MB API'}</b>\n\n"
         "Commands:\n"
         "/premium USER_ID DAYS\n"
         "/revoke USER_ID\n"
+        "/set_limit free|premium|admin MB\n"
         "/maintenance on|off\n"
         "/broadcast (reply to a message)\n"
         "/cookies (reply to cookies.txt)\n"
@@ -231,3 +237,33 @@ async def cookies_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text("🗑️ yt-dlp cookies cleared from this instance.")
 
 
+
+
+async def set_limit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id if update.effective_user else None
+    if not _is_admin(user_id) or not update.message:
+        return
+    if len(context.args) != 2:
+        await update.message.reply_text(
+            "Usage: /set_limit free|premium|admin MB\n"
+            "Example: /set_limit free 100"
+        )
+        return
+    role = context.args[0].lower()
+    if role not in {"free", "premium", "admin"} or not context.args[1].isdigit():
+        await update.message.reply_text(
+            "Usage: /set_limit free|premium|admin MB"
+        )
+        return
+    mb = int(context.args[1])
+    if mb < 1 or mb > 2000:
+        await update.message.reply_text("Limit must be between 1 and 2000 MB.")
+        return
+    limits = await asyncio.to_thread(storage.set_file_limit, role, mb)
+    await update.message.reply_text(
+        "⚙️ <b>File limit updated</b>\n\n"
+        f"🆓 Free: <b>{limits['free']} MB</b>\n"
+        f"💎 Premium: <b>{limits['premium']} MB</b>\n"
+        f"👑 Admin: <b>{limits['admin']} MB</b>",
+        parse_mode="HTML",
+    )
