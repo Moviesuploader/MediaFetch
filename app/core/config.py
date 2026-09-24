@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     ytdlp_cookies_file: str = "/tmp/mediafetch-cookies.txt"
     # Base64-encoded Netscape/Mozilla cookies file for ephemeral hosts such as Koyeb.
     ytdlp_cookies_b64: str = ""
+    # Optional separate Instagram cookie jar for sites that require login.
+    ytdlp_instagram_cookies_b64: str = ""
     # Comma-separated platforms allowed to use imported cookies. Keep social
     # platforms cookie-free by default; YouTube is the common cookie-dependent case.
     ytdlp_cookie_platforms: str = "youtube"
