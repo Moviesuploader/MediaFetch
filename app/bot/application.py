@@ -15,6 +15,7 @@ from app.bot.admin import (
     maintenance_command,
     premium_command,
     revoke_premium,
+    set_limit_command,
 )
 from app.bot.handlers import (
     about,
@@ -72,6 +73,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CommandHandler("premium_grant", premium_command))
     application.add_handler(CommandHandler("revoke", revoke_premium))
+    application.add_handler(CommandHandler("set_limit", set_limit_command))
     application.add_handler(CommandHandler("maintenance", maintenance_command))
     application.add_handler(CommandHandler("broadcast", broadcast_command))
     application.add_handler(CommandHandler("cookies", cookies_command))
