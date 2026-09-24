@@ -280,6 +280,12 @@ def _extract_profiles(url: str) -> list[dict]:
         }
         profiles.append(instagram_generic)
 
+        # Instagram photo-only posts/carousels currently make yt-dlp report
+        # "No video formats found". Keep extraction metadata available so the
+        # dedicated image fallback can handle those posts.
+        for profile in profiles:
+            profile["ignore_no_formats_error"] = True
+
     return profiles
 
 
@@ -335,29 +341,50 @@ def _instagram_web_fallback(url: str) -> tuple[dict, str, dict] | None:
             or parser.values.get("og:video:url")
             or parser.values.get("og:video")
         )
-        if not video_url:
-            return None
-        video_url = urljoin(url, video_url)
-        if urlsplit(video_url).scheme not in {"http", "https"}:
+        image_url = parser.values.get("og:image")
+        if not video_url and not image_url:
             return None
 
         post_id = next(
             (part for part in urlsplit(url).path.split("/") if part),
             "instagram",
         )
-        title = parser.values.get("og:title") or "Instagram video"
-        fmt: dict = {
-            "format_id": "instagram-og",
-            "url": video_url,
-            "ext": "mp4",
-            "vcodec": "unknown",
-            "acodec": "unknown",
-            "protocol": urlsplit(video_url).scheme,
-            "http_headers": {
-                "User-Agent": user_agent,
-                "Referer": url,
-            },
-        }
+        title = parser.values.get("og:title") or (
+            "Instagram video" if video_url else "Instagram photo"
+        )
+
+        if video_url:
+            video_url = urljoin(url, video_url)
+            if urlsplit(video_url).scheme not in {"http", "https"}:
+                return None
+            fmt: dict = {
+                "format_id": "instagram-og",
+                "url": video_url,
+                "ext": "mp4",
+                "vcodec": "unknown",
+                "acodec": "unknown",
+                "protocol": urlsplit(video_url).scheme,
+                "http_headers": {
+                    "User-Agent": user_agent,
+                    "Referer": url,
+                },
+            }
+        else:
+            image_url = urljoin(url, image_url)
+            if urlsplit(image_url).scheme not in {"http", "https"}:
+                return None
+            fmt = {
+                "format_id": "instagram-og-image",
+                "url": image_url,
+                "ext": "jpg",
+                "vcodec": "none",
+                "acodec": "none",
+                "protocol": urlsplit(image_url).scheme,
+                "http_headers": {
+                    "User-Agent": user_agent,
+                    "Referer": url,
+                },
+            }
         for key, field in (("og:video:width", "width"), ("og:video:height", "height")):
             value = parser.values.get(key)
             if value and value.isdigit():
@@ -368,6 +395,7 @@ def _instagram_web_fallback(url: str) -> tuple[dict, str, dict] | None:
             "title": title,
             "webpage_url": url,
             "thumbnail": parser.values.get("og:image"),
+            "image_url": image_url if not video_url else None,
             "formats": [fmt],
         }, url, _base_opts()
     except Exception as exc:
@@ -377,6 +405,17 @@ def _instagram_web_fallback(url: str) -> tuple[dict, str, dict] | None:
             exc,
         )
         return None
+
+
+def _has_image_media(info: dict) -> bool:
+    if _best_thumbnail(info) or _direct_image_url(info):
+        return True
+    entries = info.get("entries") or []
+    return any(
+        isinstance(entry, dict)
+        and (_best_thumbnail(entry) or _direct_image_url(entry))
+        for entry in entries
+    )
 
 
 def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
@@ -403,9 +442,7 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
                     return info, candidate, opts
 
                 candidate_platform = _platform_from_url(candidate)
-                if candidate_platform in {"instagram", "pinterest"} and (
-                    _best_thumbnail(info) or _image_entries(info)
-                ):
+                if candidate_platform in {"instagram", "pinterest"} and _has_image_media(info):
                     return info, candidate, opts
 
                 raise DownloadError("Extractor returned no downloadable media formats.")
@@ -711,8 +748,12 @@ def _download_sync(
             notify(0, "fetching highest-resolution photo…")
             return _download_images(info, output_dir, notify, max_file_mb)
 
+        # Let yt-dlp perform the actual format selection/download from the URL.
+        # Calling process_info() on metadata extracted with download=False can
+        # reuse an audio-only requested format, which is why YouTube was being
+        # returned as M4A even for "Best" video mode.
         with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.process_info(info)
+            ydl.download([selected_url])
 
             expected = Path(ydl.prepare_filename(info))
             candidates = [
