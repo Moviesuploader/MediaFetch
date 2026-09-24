@@ -7,7 +7,7 @@ import re
 import secrets
 from pathlib import Path
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InputMediaPhoto, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
@@ -73,6 +73,50 @@ async def _send_media_message(message, path: Path | None = None, file_id: str | 
         if kind == "photo" and path.stat().st_size <= 10 * 1024 * 1024:
             return await message.reply_photo(photo=media, caption=caption)
         return await message.reply_document(document=media, caption=caption)
+
+
+async def _send_photo_album(
+    message,
+    paths: list[Path] | None = None,
+    file_ids: list[str] | None = None,
+    caption: str = "",
+):
+    """Send carousel photos as one Telegram album instead of separate messages."""
+    media: list[InputMediaPhoto] = []
+
+    if file_ids is not None:
+        if len(file_ids) == 1:
+            return [await message.reply_photo(photo=file_ids[0], caption=caption)]
+        for index, file_id in enumerate(file_ids):
+            media.append(
+                InputMediaPhoto(
+                    media=file_id,
+                    caption=caption if index == 0 else None,
+                )
+            )
+        return await message.reply_media_group(media=media)
+
+    if not paths:
+        raise ValueError("paths or file_ids are required")
+
+    if len(paths) == 1:
+        with paths[0].open("rb") as photo:
+            return [await message.reply_photo(photo=photo, caption=caption)]
+
+    # Telegram albums accept 2–10 media items. max_carousel_items is capped
+    # at 10 in settings, so all photo carousel items can be sent together.
+    from contextlib import ExitStack
+
+    with ExitStack() as stack:
+        for index, path in enumerate(paths):
+            photo = stack.enter_context(path.open("rb"))
+            media.append(
+                InputMediaPhoto(
+                    media=photo,
+                    caption=caption if index == 0 else None,
+                )
+            )
+        return await message.reply_media_group(media=media)
 
 
 def _quality_keyboard(info: MediaInfo, request_id: str) -> InlineKeyboardMarkup:
@@ -366,25 +410,36 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             try:
                 cache_hit = True
                 await query.edit_message_text("⚡ <b>Cache hit</b> — sending instantly…", parse_mode="HTML")
-                for index, file_id in enumerate(cache["file_ids"], start=1):
-                    caption = (
-                        f"⚡ Cached • {platform} • {label}"
-                        if len(cache["file_ids"]) == 1
-                        else f"⚡ Cached • {platform} • Photo {index}/{len(cache['file_ids'])}"
-                    )
-                    metadata = cache.get("metadata", {}) or {}
-                    cached_kinds = metadata.get("media_kinds") or []
-                    kind = (
-                        cached_kinds[index - 1]
-                        if index - 1 < len(cached_kinds)
-                        else metadata.get("media_kind", "document")
-                    )
-                    await _send_media_message(
+                metadata = cache.get("metadata", {}) or {}
+                cached_kinds = metadata.get("media_kinds") or []
+                cached_ids = cache["file_ids"]
+
+                if cached_ids and cached_kinds and all(kind == "photo" for kind in cached_kinds):
+                    title = str(metadata.get("title") or "Media")[:80]
+                    caption = f"⚡ {platform} • {label}\n🎬 {title}\n📸 {len(cached_ids)} photos"
+                    await _send_photo_album(
                         query.message,
-                        file_id=file_id,
-                        kind=kind,
+                        file_ids=cached_ids,
                         caption=caption,
                     )
+                else:
+                    for index, file_id in enumerate(cached_ids, start=1):
+                        caption = (
+                            f"⚡ Cached • {platform} • {label}"
+                            if len(cached_ids) == 1
+                            else f"⚡ Cached • {platform} • Photo {index}/{len(cached_ids)}"
+                        )
+                        kind = (
+                            cached_kinds[index - 1]
+                            if index - 1 < len(cached_kinds)
+                            else metadata.get("media_kind", "document")
+                        )
+                        await _send_media_message(
+                            query.message,
+                            file_id=file_id,
+                            kind=kind,
+                            caption=caption,
+                        )
                 await asyncio.to_thread(storage.increment_usage, user_id)
                 await asyncio.to_thread(storage.record_event, user_id, platform, True, 0, True)
                 await asyncio.to_thread(
@@ -407,17 +462,32 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.message.chat.send_action(ChatAction.UPLOAD_DOCUMENT)
 
         last_text = ""
+        last_progress_edit = 0.0
+
+        def progress_bar(percent: float, width: int = 12) -> str:
+            percent = max(0.0, min(100.0, percent))
+            filled = int(round(percent / 100 * width))
+            return "█" * filled + "░" * (width - filled)
 
         async def progress(percent: float, detail: str) -> None:
-            nonlocal last_text
+            nonlocal last_text, last_progress_edit
+            now = asyncio.get_running_loop().time()
+            # Telegram message edits are throttled so fast downloads do not
+            # hit Bot API edit limits.
+            if percent < 100 and now - last_progress_edit < 1.5:
+                return
+
+            bar = progress_bar(percent)
             text = (
                 f"🔎 <b>Platform:</b> {platform}\n"
                 f"🎯 <b>Mode:</b> {label}\n"
-                f"⏬ <b>Progress:</b> {detail}"
+                f"⏬ <b>Download:</b> <code>[{bar}] {percent:5.1f}%</code>\n"
+                f"⚡ {detail}"
             )
             if text == last_text or status is None:
                 return
             last_text = text
+            last_progress_edit = now
             try:
                 await status.edit_text(text, parse_mode="HTML")
             except Exception:
@@ -451,29 +521,85 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await asyncio.to_thread(storage.record_event, user_id, platform, False, size_bytes)
             return
 
-        await status.edit_text("📤 <b>Uploading to Telegram…</b>", parse_mode="HTML")
-        file_ids: list[str] = []
+        # Telegram's Bot API does not expose byte-level upload progress through
+        # python-telegram-bot's normal send_* helpers. Show a live animated
+        # upload bar rather than pretending a percentage is exact.
+        upload_running = True
 
-        for index, item in enumerate(paths, start=1):
-            size_mb = item.stat().st_size / (1024 * 1024)
-            caption = (
-                f"✅ {platform} • {label} • {size_mb:.1f} MB"
-                if len(paths) == 1
-                else f"✅ {platform} • Photo {index}/{len(paths)} • {size_mb:.1f} MB"
-            )
-            kind = _media_kind(item)
-            sent = await _send_media_message(
-                query.message,
-                path=item,
-                kind=kind,
-                caption=caption,
-            )
-            if kind == "video" and sent.video:
-                file_ids.append(sent.video.file_id)
-            elif kind == "photo" and sent.photo:
-                file_ids.append(sent.photo[-1].file_id)
-            elif sent.document:
-                file_ids.append(sent.document.file_id)
+        async def upload_indicator() -> None:
+            frames = [
+                "▰▱▱▱▱▱▱▱▱▱",
+                "▰▰▱▱▱▱▱▱▱▱",
+                "▰▰▰▱▱▱▱▱▱▱",
+                "▰▰▰▰▱▱▱▱▱▱",
+                "▰▰▰▰▰▱▱▱▱▱",
+                "▰▰▰▰▰▰▱▱▱▱",
+                "▰▰▰▰▰▰▰▱▱▱",
+                "▰▰▰▰▰▰▰▰▱▱",
+                "▰▰▰▰▰▰▰▰▰▱",
+                "▰▰▰▰▰▰▰▰▰▰",
+            ]
+            index = 0
+            while upload_running:
+                try:
+                    await status.edit_text(
+                        f"📤 <b>Uploading to Telegram…</b>\n"
+                        f"<code>[{frames[index % len(frames)]}]</code>",
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+                index += 1
+                await asyncio.sleep(1.2)
+
+        upload_task = asyncio.create_task(upload_indicator())
+        file_ids: list[str] = []
+        try:
+            photo_paths = [
+                item for item in paths
+                if _media_kind(item) == "photo" and item.stat().st_size <= 10 * 1024 * 1024
+            ]
+
+            if len(photo_paths) == len(paths) and photo_paths:
+                title = info.title if isinstance(info, MediaInfo) else "Media"
+                total_mb = sum(item.stat().st_size for item in paths) / (1024 * 1024)
+                caption = (
+                    f"✅ {platform} • {label}\n"
+                    f"🎬 {title[:80]}\n"
+                    f"📸 {len(paths)} photos • {total_mb:.1f} MB"
+                )
+                sent_messages = await _send_photo_album(
+                    query.message,
+                    paths=photo_paths,
+                    caption=caption,
+                )
+                for sent in sent_messages:
+                    if sent.photo:
+                        file_ids.append(sent.photo[-1].file_id)
+            else:
+                for index, item in enumerate(paths, start=1):
+                    size_mb = item.stat().st_size / (1024 * 1024)
+                    caption = (
+                        f"✅ {platform} • {label} • {size_mb:.1f} MB"
+                        if len(paths) == 1
+                        else f"✅ {platform} • Photo {index}/{len(paths)} • {size_mb:.1f} MB"
+                    )
+                    kind = _media_kind(item)
+                    sent = await _send_media_message(
+                        query.message,
+                        path=item,
+                        kind=kind,
+                        caption=caption,
+                    )
+                    if kind == "video" and sent.video:
+                        file_ids.append(sent.video.file_id)
+                    elif kind == "photo" and sent.photo:
+                        file_ids.append(sent.photo[-1].file_id)
+                    elif sent.document:
+                        file_ids.append(sent.document.file_id)
+        finally:
+            upload_running = False
+            await upload_task
 
         if file_ids:
             media_kinds = [_media_kind(item) for item in paths]
