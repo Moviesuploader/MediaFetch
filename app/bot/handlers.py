@@ -33,7 +33,9 @@ SUPPORTED_TEXT = (
 
 
 def _cache_key(url: str, mode: str) -> str:
-    return hashlib.sha256(f"{url}|{mode}".encode("utf-8")).hexdigest()
+    # v2 invalidates older document-only cache entries so native video/photo
+    # Telegram media types are regenerated after the media-send fix.
+    return hashlib.sha256(f"v2|{url}|{mode}".encode("utf-8")).hexdigest()
 
 
 def _limit_for(user_id: int) -> int:
