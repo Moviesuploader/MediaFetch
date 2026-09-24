@@ -18,7 +18,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p /tmp/mediafetch
+RUN mkdir -p /tmp/mediafetch \
+    && useradd --create-home --uid 10001 appuser \
+    && chown -R appuser:appuser /app /tmp/mediafetch
+
+USER appuser
 
 EXPOSE 8000
 
