@@ -4,12 +4,21 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     bot_token: str = ""
     download_dir: str = "/tmp/mediafetch"
+    # Role-based source/download limits. Actual Telegram upload size depends
+    # on whether a Local Bot API Server is configured.
+    free_max_file_mb: int = 100
+    premium_max_file_mb: int = 500
+    admin_max_file_mb: int = 2000
     max_file_mb: int = 50
     max_concurrent_downloads: int = 1
     webhook_mode: bool = False
     webhook_secret: str = ""
     public_base_url: str = ""
     koyeb_public_domain: str = ""
+    # Optional Local Bot API Server. Official Bot API is limited to 50 MB
+    # uploads; Telegram's local server supports uploads up to 2000 MB.
+    telegram_api_base_url: str = ""
+    telegram_api_file_base_url: str = ""
     # Optional public HTTPS base URL for hosts such as Antideploy.
     antideploy_public_url: str = ""
     ytdlp_cookies_file: str = "/tmp/mediafetch-cookies.txt"
