@@ -38,6 +38,66 @@ def _cache_key(url: str, mode: str) -> str:
     return hashlib.sha256(f"v2|{url}|{mode}".encode("utf-8")).hexdigest()
 
 
+def _is_admin(user_id: int) -> bool:
+    return user_id in settings.admin_id_set
+
+
+def _file_limit_mb(user_id: int) -> int:
+    if _is_admin(user_id):
+        configured = settings.admin_max_file_mb
+    elif storage.is_premium(user_id):
+        configured = settings.premium_max_file_mb
+    else:
+        configured = settings.free_max_file_mb
+
+    # Official cloud Bot API uploads are limited to 50 MB. A Local Bot API
+    # Server raises the upload ceiling to 2000 MB.
+    if not settings.telegram_api_base_url:
+        return min(configured, 50)
+    return min(configured, 2000)
+
+
+def _limit_label(user_id: int) -> str:
+    if _is_admin(user_id):
+        return f"{settings.admin_max_file_mb} MB (Admin)"
+    if storage.is_premium(user_id):
+        return f"{settings.premium_max_file_mb} MB (Premium)"
+    return f"{settings.free_max_file_mb} MB (Free)"
+
+
+def _estimated_size_for_mode(info: MediaInfo, mode: str) -> int:
+    if not info.estimated_sizes:
+        return 0
+    values = dict(info.estimated_sizes)
+    if mode.endswith("p") and mode[:-1].isdigit():
+        return values.get(int(mode[:-1]), 0)
+    if mode == "best":
+        known = [size for height, size in info.estimated_sizes if height > 0]
+        return max(known, default=0)
+    return 0
+
+
+def _limit_message(user_id: int, estimated_bytes: int, limit_mb: int) -> str:
+    estimated_mb = estimated_bytes / (1024 * 1024)
+    if _is_admin(user_id):
+        return (
+            f"⚠️ This file is estimated at <b>{estimated_mb:.1f} MB</b>, "
+            f"which is above the configured Admin limit of <b>{limit_mb} MB</b>."
+        )
+    if storage.is_premium(user_id):
+        return (
+            f"⚠️ This file is estimated at <b>{estimated_mb:.1f} MB</b>, "
+            f"which is above your Premium limit of <b>{limit_mb} MB</b>."
+        )
+    return (
+        f"📦 <b>File too large for Free users.</b>\n\n"
+        f"Estimated size: <b>{estimated_mb:.1f} MB</b>\n"
+        f"Free limit: <b>{settings.free_max_file_mb} MB</b>\n\n"
+        "💎 <b>Premium required</b> for larger downloads.\n"
+        "Use /premium to check your Premium status."
+    )
+
+
 def _limit_for(user_id: int) -> int:
     return settings.premium_daily_limit if storage.is_premium(user_id) else settings.free_daily_limit
 
@@ -151,7 +211,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "👋 <b>Welcome to MediaFetch!</b>\n\n"
         "Send a public media URL and choose the quality.\n"
-        "🎬 Video • 🎵 MP3 • 📸 HD photos • 🖼️ carousels\n\n"
+        "🎬 Video • 🎵 MP3 • 📸 HD photos • 🖼️ carousels\n"
+        f"📦 Free limit: <b>{settings.free_max_file_mb} MB</b> • Premium: <b>{settings.premium_max_file_mb} MB</b>\n\n"
         "Use /help for commands.",
         parse_mode="HTML",
     )
@@ -370,10 +431,15 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text(f"🚦 Daily limit reached ({limit}).")
         return
 
-    max_file_mb = min(
-        settings.premium_max_file_mb if storage.is_premium(user_id) else settings.max_file_mb,
-        50,
-    )
+    max_file_mb = _file_limit_mb(user_id)
+
+    estimated_bytes = _estimated_size_for_mode(info, mode) if isinstance(info, MediaInfo) else 0
+    if estimated_bytes > max_file_mb * 1024 * 1024:
+        await query.edit_message_text(
+            _limit_message(user_id, estimated_bytes, max_file_mb),
+            parse_mode="HTML",
+        )
+        return
 
     async with _ACTIVE_LOCK:
         if user_id in _ACTIVE_USERS:
@@ -515,9 +581,17 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         size_bytes = sum(item.stat().st_size for item in paths)
         max_bytes = max_file_mb * 1024 * 1024
         if any(item.stat().st_size > max_bytes for item in paths):
-            await status.edit_text(
-                f"⚠️ One or more files exceed the {max_file_mb} MB upload limit."
-            )
+            if not _is_admin(user_id) and not storage.is_premium(user_id):
+                await status.edit_text(
+                    f"📦 <b>File is larger than the Free limit ({settings.free_max_file_mb} MB).</b>\n\n"
+                    "💎 Please get Premium to download larger files.",
+                    parse_mode="HTML",
+                )
+            else:
+                await status.edit_text(
+                    f"⚠️ One or more files exceed your {_limit_label(user_id)} limit.",
+                    parse_mode="HTML",
+                )
             await asyncio.to_thread(storage.record_event, user_id, platform, False, size_bytes)
             return
 
