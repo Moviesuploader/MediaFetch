@@ -49,6 +49,13 @@ def build_application() -> Application:
         .token(settings.bot_token)
         .concurrent_updates(8)
     )
+    if settings.telegram_api_base_url:
+        builder = builder.base_url(settings.telegram_api_base_url.rstrip("/") + "/bot")
+        if settings.telegram_api_file_base_url:
+            builder = builder.base_file_url(
+                settings.telegram_api_file_base_url.rstrip("/") + "/file/bot"
+            )
+
     if settings.webhook_mode:
         # The FastAPI service owns the webhook endpoint in Koyeb.
         builder = builder.updater(None)
