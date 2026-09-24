@@ -40,6 +40,39 @@ def _limit_for(user_id: int) -> int:
     return settings.premium_daily_limit if storage.is_premium(user_id) else settings.free_daily_limit
 
 
+def _media_kind(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".mp4":
+        return "video"
+    if suffix in {".jpg", ".jpeg", ".png", ".webp"}:
+        return "photo"
+    return "document"
+
+
+async def _send_media_message(message, path: Path | None = None, file_id: str | None = None,
+                              kind: str = "document", caption: str = ""):
+    if file_id:
+        if kind == "video":
+            return await message.reply_video(video=file_id, caption=caption, supports_streaming=True)
+        if kind == "photo":
+            return await message.reply_photo(photo=file_id, caption=caption)
+        return await message.reply_document(document=file_id, caption=caption)
+
+    if path is None:
+        raise ValueError("path or file_id is required")
+
+    with path.open("rb") as media:
+        if kind == "video":
+            return await message.reply_video(
+                video=media,
+                caption=caption,
+                supports_streaming=True,
+            )
+        if kind == "photo" and path.stat().st_size <= 10 * 1024 * 1024:
+            return await message.reply_photo(photo=media, caption=caption)
+        return await message.reply_document(document=media, caption=caption)
+
+
 def _quality_keyboard(info: MediaInfo, request_id: str) -> InlineKeyboardMarkup:
     if info.is_photo:
         rows = [[InlineKeyboardButton("📸 HD / Original", callback_data=f"mf:{request_id}:photo")]]
@@ -337,7 +370,19 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         if len(cache["file_ids"]) == 1
                         else f"⚡ Cached • {platform} • Photo {index}/{len(cache['file_ids'])}"
                     )
-                    await query.message.reply_document(document=file_id, caption=caption)
+                    metadata = cache.get("metadata", {}) or {}
+                    cached_kinds = metadata.get("media_kinds") or []
+                    kind = (
+                        cached_kinds[index - 1]
+                        if index - 1 < len(cached_kinds)
+                        else metadata.get("media_kind", "document")
+                    )
+                    await _send_media_message(
+                        query.message,
+                        file_id=file_id,
+                        kind=kind,
+                        caption=caption,
+                    )
                 await asyncio.to_thread(storage.increment_usage, user_id)
                 await asyncio.to_thread(storage.record_event, user_id, platform, True, 0, True)
                 await asyncio.to_thread(
@@ -414,16 +459,28 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 if len(paths) == 1
                 else f"✅ {platform} • Photo {index}/{len(paths)} • {size_mb:.1f} MB"
             )
-            with item.open("rb") as media:
-                sent = await query.message.reply_document(document=media, caption=caption)
-            if sent.document:
+            kind = _media_kind(item)
+            sent = await _send_media_message(
+                query.message,
+                path=item,
+                kind=kind,
+                caption=caption,
+            )
+            if kind == "video" and sent.video:
+                file_ids.append(sent.video.file_id)
+            elif kind == "photo" and sent.photo:
+                file_ids.append(sent.photo[-1].file_id)
+            elif sent.document:
                 file_ids.append(sent.document.file_id)
 
         if file_ids:
+            media_kinds = [_media_kind(item) for item in paths]
             metadata = {
                 "title": info.title if isinstance(info, MediaInfo) else "Media",
                 "platform": platform,
                 "size_bytes": size_bytes,
+                "media_kind": media_kinds[0] if len(set(media_kinds)) == 1 else "document",
+                "media_kinds": media_kinds,
             }
             await asyncio.to_thread(storage.set_cache, _cache_key(url, mode), file_ids, metadata)
 
