@@ -316,6 +316,112 @@ class _OpenGraphParser(HTMLParser):
             self.values.setdefault(key.lower(), content.strip())
 
 
+def _meta_public_page_fallback(url: str) -> tuple[dict, str, dict] | None:
+    """Recover public Meta/Threads media from OpenGraph page metadata.
+
+    This is deliberately public-page only: it does not bypass private posts,
+    login gates, DRM, or audience restrictions.
+    """
+    platform = _platform_from_url(url)
+    if platform not in {"facebook", "threads"}:
+        return None
+
+    try:
+        user_agent = (
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/146.0 Safari/537.36"
+        )
+        request = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": user_agent,
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            html = response.read(8 * 1024 * 1024).decode("utf-8", "replace")
+
+        parser = _OpenGraphParser()
+        parser.feed(html)
+
+        video_url = (
+            parser.values.get("og:video:secure_url")
+            or parser.values.get("og:video:url")
+            or parser.values.get("og:video")
+        )
+        image_url = parser.values.get("og:image")
+
+        # Do not turn a video thumbnail into a fake "photo" result.
+        if not video_url and not image_url:
+            return None
+
+        post_id = next(
+            (part for part in urlsplit(url).path.split("/") if part),
+            platform,
+        )
+        title = parser.values.get("og:title") or (
+            f"{platform} video" if video_url else f"{platform} photo"
+        )
+
+        if video_url:
+            video_url = urljoin(url, video_url)
+            if urlsplit(video_url).scheme not in {"http", "https"}:
+                return None
+            fmt = {
+                "format_id": f"{platform}-og-video",
+                "url": video_url,
+                "ext": "mp4",
+                "vcodec": "unknown",
+                "acodec": "unknown",
+                "protocol": urlsplit(video_url).scheme,
+                "http_headers": {
+                    "User-Agent": user_agent,
+                    "Referer": url,
+                },
+            }
+        else:
+            image_url = urljoin(url, image_url)
+            if urlsplit(image_url).scheme not in {"http", "https"}:
+                return None
+            fmt = {
+                "format_id": f"{platform}-og-image",
+                "url": image_url,
+                "ext": "jpg",
+                "vcodec": "none",
+                "acodec": "none",
+                "protocol": urlsplit(image_url).scheme,
+                "http_headers": {
+                    "User-Agent": user_agent,
+                    "Referer": url,
+                },
+            }
+
+        for key, field in (
+            ("og:video:width", "width"),
+            ("og:video:height", "height"),
+        ):
+            value = parser.values.get(key)
+            if value and value.isdigit():
+                fmt[field] = int(value)
+
+        return {
+            "id": post_id,
+            "title": title,
+            "webpage_url": url,
+            "thumbnail": image_url,
+            "formats": [fmt],
+        }, url, _base_opts()
+    except Exception as exc:
+        logger.warning(
+            "%s public-page fallback failed error_type=%s error=%s",
+            platform.capitalize(),
+            type(exc).__name__,
+        )
+        return None
+
+
 def _instagram_web_fallback(url: str) -> tuple[dict, str, dict] | None:
     """Recover public Instagram video from page metadata when its API path breaks."""
     try:
@@ -454,11 +560,24 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
                     _platform_from_url(candidate), profile_name, candidate, exc,
                 )
 
-    if _platform_from_url(url) == "instagram":
+    platform = _platform_from_url(url)
+
+    if platform == "instagram":
         for candidate in _url_variants(url):
             fallback = _instagram_web_fallback(candidate)
             if fallback:
                 logger.info("Instagram public-page fallback succeeded url=%s", candidate)
+                return fallback
+
+    if platform in {"facebook", "threads"}:
+        for candidate in _url_variants(url):
+            fallback = _meta_public_page_fallback(candidate)
+            if fallback:
+                logger.info(
+                    "%s public-page fallback succeeded url=%s",
+                    platform.capitalize(),
+                    candidate,
+                )
                 return fallback
 
     logger.error("yt-dlp extraction failed after all fallbacks url=%s error=%s", url, last_error)
