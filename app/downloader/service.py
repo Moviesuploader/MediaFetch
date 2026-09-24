@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import mimetypes
 import time
 import logging
@@ -88,9 +89,40 @@ def _cookie_platforms() -> set[str]:
     }
 
 
+def _materialize_cookie_file() -> Path | None:
+    """Materialize an optional base64-encoded Netscape cookie jar on ephemeral hosts."""
+    encoded = settings.ytdlp_cookies_b64.strip()
+    if not encoded:
+        return None
+
+    cookie_file = Path(settings.ytdlp_cookies_file)
+    try:
+        data = base64.b64decode(encoded, validate=True)
+        if not data:
+            return None
+        lines = data.splitlines()
+        first_line = lines[0].decode("utf-8", "replace").strip() if lines else ""
+        if first_line not in {"# HTTP Cookie File", "# Netscape HTTP Cookie File"}:
+            logger.warning("YTDLP_COOKIES_B64 is not a Netscape/Mozilla cookie jar; ignoring it")
+            return None
+        cookie_file.parent.mkdir(parents=True, exist_ok=True)
+        cookie_file.write_bytes(data)
+        try:
+            cookie_file.chmod(0o600)
+        except OSError:
+            pass
+        return cookie_file
+    except Exception as exc:
+        logger.warning(
+            "Failed to materialize YTDLP_COOKIES_B64 error_type=%s",
+            type(exc).__name__,
+        )
+        return None
+
+
 def _apply_cookie_policy(opts: dict, url: str) -> dict:
     """Apply imported cookies only to explicitly configured platforms."""
-    cookie_file = Path(settings.ytdlp_cookies_file)
+    cookie_file = _materialize_cookie_file() or Path(settings.ytdlp_cookies_file)
     platform = _platform_from_url(url)
     if (
         platform in _cookie_platforms()
