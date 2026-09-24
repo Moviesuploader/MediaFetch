@@ -73,8 +73,8 @@ def _base_opts() -> dict:
         # Deno is already installed in the MediaFetch image. Allow yt-dlp to
         # fetch current EJS challenge components when the bundled package is
         # unavailable/outdated.
-        "js_runtimes": ["deno"],
-        "remote_components": ["ejs:github"],
+        "js_runtimes": {"deno": {}},
+        "remote_components": {"ejs:github"},
     }
 
     return opts
