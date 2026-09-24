@@ -753,7 +753,7 @@ def _quality_selector(mode: str) -> str:
         return ""
     if mode.endswith("p") and mode[:-1].isdigit():
         height = int(mode[:-1])
-        return f"bv*[height<=?{height}]+ba/b[height<=?{height}]"
+        return f"bv*[height<={height}]+ba/b[height<={height}]"
     raise DownloadError("Unknown download mode.")
 
 
@@ -847,6 +847,18 @@ def _download_sync(
         selected_url = url
         try:
             info, selected_url, extraction_opts = _extract_with_fallback(url)
+
+            # A /live channel URL can resolve to an actively broadcasting
+            # stream. There is no finite file to finish downloading, and a
+            # live stream can grow far beyond the bot's upload/storage limit.
+            # Reject it early instead of consuming Koyeb disk/network for an
+            # unbounded download. Finished live videos remain downloadable.
+            if info.get("is_live"):
+                raise DownloadError(
+                    "This YouTube link points to an active live stream. "
+                    "Please send the finished video URL after the live ends."
+                )
+
             opts.update(extraction_opts)
             # Extraction options are authoritative for cookies/client selection;
             # restore download-only options that must survive the merge.
