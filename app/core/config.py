@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     # Optional public HTTPS base URL for hosts such as Antideploy.
     antideploy_public_url: str = ""
     ytdlp_cookies_file: str = "/tmp/mediafetch-cookies.txt"
+    # Base64-encoded Netscape/Mozilla cookies file for ephemeral hosts such as Koyeb.
+    ytdlp_cookies_b64: str = ""
     # Comma-separated platforms allowed to use imported cookies. Keep social
     # platforms cookie-free by default; YouTube is the common cookie-dependent case.
     ytdlp_cookie_platforms: str = "youtube"
