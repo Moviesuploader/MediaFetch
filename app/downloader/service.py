@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import mimetypes
 import time
 import logging
@@ -47,7 +48,7 @@ class MediaInfo:
 
 
 def _base_opts() -> dict:
-    opts = {
+    return {
         "quiet": True,
         "no_warnings": True,
         "restrictfilenames": True,
@@ -78,8 +79,6 @@ def _base_opts() -> dict:
         "remote_components": {"ejs:github"},
     }
 
-    return opts
-
 
 def _cookie_platforms() -> set[str]:
     return {
@@ -89,47 +88,84 @@ def _cookie_platforms() -> set[str]:
     }
 
 
-def _materialize_cookie_file() -> Path | None:
-    """Materialize an optional base64-encoded Netscape cookie jar on ephemeral hosts."""
-    encoded = settings.ytdlp_cookies_b64.strip()
+def _materialize_cookie_jar(encoded: str, filename: str, label: str) -> Path | None:
+    """Decode a base64 Netscape cookie jar on an ephemeral host."""
+    encoded = "".join(encoded.split())
     if not encoded:
         return None
 
-    cookie_file = Path(settings.ytdlp_cookies_file)
+    cookie_file = Path(filename)
     try:
         data = base64.b64decode(encoded, validate=True)
         if not data:
             return None
-        lines = data.splitlines()
-        first_line = lines[0].decode("utf-8", "replace").strip() if lines else ""
+
+        # Accept UTF-8 BOM/leading whitespace before the standard Netscape
+        # cookie-file header. Never log the cookie contents.
+        text = data.decode("utf-8", "replace").lstrip("\ufeff\r\n \t")
+        first_line = text.splitlines()[0].strip() if text.splitlines() else ""
         if first_line not in {"# HTTP Cookie File", "# Netscape HTTP Cookie File"}:
-            logger.warning("YTDLP_COOKIES_B64 is not a Netscape/Mozilla cookie jar; ignoring it")
+            logger.warning("%s cookie jar has an unsupported format; ignoring it", label)
             return None
+
         cookie_file.parent.mkdir(parents=True, exist_ok=True)
         cookie_file.write_bytes(data)
         try:
             cookie_file.chmod(0o600)
         except OSError:
             pass
+
+        logger.info("%s cookie jar loaded size=%d bytes", label, cookie_file.stat().st_size)
         return cookie_file
-    except Exception as exc:
+    except (binascii.Error, ValueError, OSError, UnicodeError) as exc:
         logger.warning(
-            "Failed to materialize YTDLP_COOKIES_B64 error_type=%s",
+            "Failed to materialize %s cookie jar error_type=%s",
+            label,
             type(exc).__name__,
         )
         return None
 
 
+def _materialize_cookie_file() -> Path | None:
+    return _materialize_cookie_jar(
+        settings.ytdlp_cookies_b64,
+        settings.ytdlp_cookies_file,
+        "YouTube/general",
+    )
+
+
+def _materialize_instagram_cookie_file() -> Path | None:
+    return _materialize_cookie_jar(
+        settings.ytdlp_instagram_cookies_b64,
+        settings.ytdlp_instagram_cookies_file,
+        "Instagram",
+    )
+
+
 def _apply_cookie_policy(opts: dict, url: str) -> dict:
-    """Apply imported cookies only to explicitly configured platforms."""
-    cookie_file = _materialize_cookie_file() or Path(settings.ytdlp_cookies_file)
+    """Apply only the cookie jar explicitly configured for the URL platform."""
     platform = _platform_from_url(url)
+
+    if platform == "instagram":
+        cookie_file = _materialize_instagram_cookie_file()
+        if cookie_file and cookie_file.is_file() and cookie_file.stat().st_size > 0:
+            opts["cookiefile"] = str(cookie_file)
+        else:
+            opts.pop("cookiefile", None)
+        return opts
+
+    cookie_file = _materialize_cookie_file() or Path(settings.ytdlp_cookies_file)
     if (
         platform in _cookie_platforms()
         and cookie_file.is_file()
         and cookie_file.stat().st_size > 0
     ):
         opts["cookiefile"] = str(cookie_file)
+        logger.info(
+            "yt-dlp cookies enabled platform=%s size=%d bytes",
+            platform,
+            cookie_file.stat().st_size,
+        )
     else:
         opts.pop("cookiefile", None)
     return opts
@@ -164,41 +200,29 @@ def _url_variants(url: str) -> list[str]:
             if candidate not in variants:
                 variants.append(candidate)
 
-        # Instagram share links can contain item selectors that become stale.
         if host == "instagram.com" or host.endswith(".instagram.com"):
             query = parse_qs(parts.query, keep_blank_values=True)
             query.pop("img_index", None)
             query.pop("stkn", None)
             add_variant(raw_host, query=query)
-            # Share/tracking parameters can change the HTML/API response.
             add_variant(raw_host, query={})
-            # Instagram sometimes exposes public media through the embed page
-            # even when the normal reel page is login-gated.
             path_parts = [part for part in path.split("/") if part]
             if len(path_parts) >= 2 and path_parts[0] in {"reel", "p", "tv"}:
                 embed_path = f"/{path_parts[0]}/{path_parts[1]}/embed/"
                 add_variant(raw_host, new_path=embed_path, query={})
 
-        # Facebook sometimes serves a different response shape from the
-        # mobile host. Retry the same public URL on m.facebook.com.
         elif host == "facebook.com" or host.endswith(".facebook.com"):
             if raw_host != "m.facebook.com":
                 add_variant("m.facebook.com")
 
-        # X/Twitter has several legacy/mobile hostnames. Keep the canonical
-        # x.com form as a second attempt.
         elif host in {"twitter.com", "mobile.twitter.com", "m.twitter.com", "x.com", "mobile.x.com"}:
             if raw_host != "x.com":
                 add_variant("x.com")
 
-        # Reddit's old/new/mobile frontends can return different HTML/API
-        # responses. Retry through the normal www host.
         elif host in {"old.reddit.com", "new.reddit.com", "m.reddit.com", "reddit.com"}:
             if raw_host != "www.reddit.com":
                 add_variant("www.reddit.com")
 
-        # Threads has both threads.net and threads.com hostnames. Keep the
-        # current canonical threads.net form as a fallback.
         elif host == "threads.com":
             add_variant("www.threads.net")
 
@@ -232,22 +256,15 @@ def _platform_from_url(url: str) -> str:
 
 
 def _extract_profiles(url: str) -> list[dict]:
-    """Return ordered, non-bypass extraction profiles.
-
-    The generic profile lets yt-dlp use OpenGraph/direct-media metadata when a
-    site's dedicated extractor is temporarily broken. It does not authenticate
-    or bypass private/DRM access.
-    """
     platform = _platform_from_url(url)
     profiles = [_base_opts()]
+
     if platform in {"facebook", "instagram", "threads", "pinterest", "reddit", "x", "tiktok"}:
         generic = _base_opts()
         generic["allowed_extractors"] = ["generic"]
         profiles.append(generic)
 
     if platform == "youtube":
-        # YouTube periodically changes which logged-out player clients expose
-        # downloadable formats. Retry documented client combinations.
         for clients in (["default", "web_embedded"], ["default", "mweb"]):
             youtube_profile = _base_opts()
             youtube_profile["extractor_args"] = {
@@ -256,15 +273,13 @@ def _extract_profiles(url: str) -> list[dict]:
             profiles.append(youtube_profile)
 
     if platform == "instagram":
-        # Instagram may require browser-like TLS fingerprints for some
-        # public requests. Scope impersonation to the Instagram generic
-        # fallback so other platforms keep the normal request path.
         instagram_generic = _base_opts()
         instagram_generic["allowed_extractors"] = ["generic"]
         instagram_generic["extractor_args"] = {
             "generic": {"impersonate": "chrome"},
         }
         profiles.append(instagram_generic)
+
     return profiles
 
 
@@ -375,8 +390,6 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(candidate, download=False)
 
-                # Image carousels may be represented as a playlist. Retry the
-                # playlist form when a single-item extraction exposes no video.
                 if not _has_video_format(info):
                     entries = info.get("entries") or []
                     if not entries or len(entries) <= 1:
@@ -386,13 +399,9 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
                             info = ydl.extract_info(candidate, download=False)
                         opts = playlist_opts
 
-                # A thumbnail is not proof that a video is downloadable.
-                # Continue through alternate player clients when an extractor
-                # returns metadata but no usable video formats.
                 if _has_video_format(info):
                     return info, candidate, opts
 
-                # Image-only posts and carousels are valid non-video media.
                 candidate_platform = _platform_from_url(candidate)
                 if candidate_platform in {"instagram", "pinterest"} and (
                     _best_thumbnail(info) or _image_entries(info)
@@ -518,7 +527,6 @@ def _download_image(url: str, target: Path, max_file_mb: int, headers: dict[str,
 
 
 def _direct_image_url(entry: dict) -> str | None:
-    """Prefer original/direct image URLs over thumbnail representations."""
     for key in ("original_url", "image_url", "url"):
         value = entry.get(key)
         if isinstance(value, str) and value.startswith(("http://", "https://")):
@@ -679,14 +687,19 @@ def _download_sync(
     before = set(Path(output_dir).glob("*"))
 
     try:
-        # Use the same URL fallback strategy during the actual download.
         info = None
         selected_url = url
         try:
             info, selected_url, extraction_opts = _extract_with_fallback(url)
-            # Preserve download-specific options (format/output/progress) while
-            # retaining the successful extraction profile.
             opts.update(extraction_opts)
+            # Extraction options are authoritative for cookies/client selection;
+            # restore download-only options that must survive the merge.
+            opts["outtmpl"] = str(Path(output_dir) / "%(title).80s-%(id)s.%(ext)s")
+            opts["format"] = selector or "best"
+            opts["noplaylist"] = True
+            opts["merge_output_format"] = "mp4"
+            opts["max_filesize"] = max_file_mb * 1024 * 1024
+            opts["progress_hooks"] = [progress_hook]
         except Exception as exc:
             raise DownloadError(str(exc)) from exc
 
@@ -698,8 +711,6 @@ def _download_sync(
             notify(0, "fetching highest-resolution photo…")
             return _download_images(info, output_dir, notify, max_file_mb)
 
-        # The extractor result was obtained from the selected URL, so process
-        # that exact info object instead of re-extracting the original URL.
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.process_info(info)
 
