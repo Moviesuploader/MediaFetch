@@ -43,12 +43,13 @@ def _is_admin(user_id: int) -> bool:
 
 
 def _file_limit_mb(user_id: int) -> int:
+    limits = storage.file_limits()
     if _is_admin(user_id):
-        configured = settings.admin_max_file_mb
+        configured = limits["admin"]
     elif storage.is_premium(user_id):
-        configured = settings.premium_max_file_mb
+        configured = limits["premium"]
     else:
-        configured = settings.free_max_file_mb
+        configured = limits["free"]
 
     # Official cloud Bot API uploads are limited to 50 MB. A Local Bot API
     # Server raises the upload ceiling to 2000 MB.
@@ -58,11 +59,12 @@ def _file_limit_mb(user_id: int) -> int:
 
 
 def _limit_label(user_id: int) -> str:
+    limits = storage.file_limits()
     if _is_admin(user_id):
-        return f"{settings.admin_max_file_mb} MB (Admin)"
+        return f"{limits['admin']} MB (Admin)"
     if storage.is_premium(user_id):
-        return f"{settings.premium_max_file_mb} MB (Premium)"
-    return f"{settings.free_max_file_mb} MB (Free)"
+        return f"{limits['premium']} MB (Premium)"
+    return f"{limits['free']} MB (Free)"
 
 
 def _estimated_size_for_mode(info: MediaInfo, mode: str) -> int:
@@ -92,7 +94,7 @@ def _limit_message(user_id: int, estimated_bytes: int, limit_mb: int) -> str:
     return (
         f"📦 <b>File too large for Free users.</b>\n\n"
         f"Estimated size: <b>{estimated_mb:.1f} MB</b>\n"
-        f"Free limit: <b>{settings.free_max_file_mb} MB</b>\n\n"
+        f"Free limit: <b>{storage.file_limits()['free']} MB</b>\n\n"
         "💎 <b>Premium required</b> for larger downloads.\n"
         "Use /premium to check your Premium status."
     )
@@ -212,7 +214,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "👋 <b>Welcome to MediaFetch!</b>\n\n"
         "Send a public media URL and choose the quality.\n"
         "🎬 Video • 🎵 MP3 • 📸 HD photos • 🖼️ carousels\n"
-        f"📦 Free limit: <b>{settings.free_max_file_mb} MB</b> • Premium: <b>{settings.premium_max_file_mb} MB</b>\n\n"
+        f"📦 Free limit: <b>{storage.file_limits()['free']} MB</b> • Premium: <b>{storage.file_limits()['premium']} MB</b>\n\n"
         "Use /help for commands.",
         parse_mode="HTML",
     )
@@ -583,7 +585,7 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if any(item.stat().st_size > max_bytes for item in paths):
             if not _is_admin(user_id) and not storage.is_premium(user_id):
                 await status.edit_text(
-                    f"📦 <b>File is larger than the Free limit ({settings.free_max_file_mb} MB).</b>\n\n"
+                    f"📦 <b>File is larger than the Free limit ({storage.file_limits()['free']} MB).</b>\n\n"
                     "💎 Please get Premium to download larger files.",
                     parse_mode="HTML",
                 )
