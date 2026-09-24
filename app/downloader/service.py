@@ -37,6 +37,9 @@ class MediaInfo:
     heights: tuple[int, ...]
     is_photo: bool
     item_count: int = 1
+    # (mode_height, estimated_bytes). -1 height means a best/progressive
+    # format. Values come from yt-dlp filesize/filesize_approx when available.
+    estimated_sizes: tuple[tuple[int, int], ...] = ()
 
     @property
     def duration_text(self) -> str:
@@ -608,6 +611,30 @@ def inspect_media(url: str) -> MediaInfo:
         },
         reverse=True,
     )
+
+    estimated: dict[int, int] = {}
+    progressive_best = 0
+    for fmt in formats:
+        if not isinstance(fmt, dict) or fmt.get("vcodec") in (None, "none"):
+            continue
+        size = int(fmt.get("filesize") or fmt.get("filesize_approx") or 0)
+        if size <= 0:
+            continue
+        height = int(fmt.get("height") or 0)
+        if height > 0:
+            # Keep the smallest known file at each resolution so the user
+            # limit check does not reject a quality merely because another
+            # codec/format at the same resolution is larger.
+            estimated[height] = min(estimated.get(height, size), size)
+        if fmt.get("acodec") not in (None, "none"):
+            progressive_best = max(progressive_best, size)
+
+    estimated_sizes = tuple(sorted(
+        [(height, size) for height, size in estimated.items()],
+        reverse=True,
+    ))
+    if progressive_best:
+        estimated_sizes = ((-1, progressive_best),) + estimated_sizes
     is_photo = not _has_video_format(info) and bool(_best_thumbnail(info) or entries)
     duration = info.get("duration")
     if duration is None and entries:
@@ -621,6 +648,7 @@ def inspect_media(url: str) -> MediaInfo:
         heights=tuple(heights),
         is_photo=is_photo,
         item_count=min(max(len(entries), 1), settings.max_carousel_items),
+        estimated_sizes=estimated_sizes,
     )
 
 
