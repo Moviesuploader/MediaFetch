@@ -92,6 +92,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="MediaFetch", version="0.1.0", lifespan=lifespan)
 
 
+@app.get("/ready")
+async def ready() -> dict[str, str]:
+    return {"status": "ready", "service": "MediaFetch"}
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {
