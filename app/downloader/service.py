@@ -51,10 +51,12 @@ def _base_opts() -> dict:
         "no_warnings": True,
         "restrictfilenames": True,
         "socket_timeout": 30,
-        "retries": 3,
-        "fragment_retries": 3,
-        "extractor_retries": 2,
-        "file_access_retries": 2,
+        "extractor_args": {},
+        "timeout": settings.extraction_timeout_seconds,
+        "retries": max(1, settings.ytdlp_max_retries),
+        "fragment_retries": max(1, settings.ytdlp_max_retries),
+        "extractor_retries": max(1, settings.ytdlp_max_retries),
+        "file_access_retries": max(1, settings.ytdlp_max_retries),
         "retry_sleep_functions": {
             "http": "exp=1:8",
             "fragment": "exp=1:8",
@@ -75,12 +77,29 @@ def _base_opts() -> dict:
         "remote_components": ["ejs:github"],
     }
 
-    # Optional admin-imported Netscape cookies. These are applied to every
-    # yt-dlp extraction/download when the cookie file is present.
-    cookie_file = Path(settings.ytdlp_cookies_file)
-    if cookie_file.is_file() and cookie_file.stat().st_size > 0:
-        opts["cookiefile"] = str(cookie_file)
+    return opts
 
+
+def _cookie_platforms() -> set[str]:
+    return {
+        item.strip().lower()
+        for item in settings.ytdlp_cookie_platforms.split(",")
+        if item.strip()
+    }
+
+
+def _apply_cookie_policy(opts: dict, url: str) -> dict:
+    """Apply imported cookies only to explicitly configured platforms."""
+    cookie_file = Path(settings.ytdlp_cookies_file)
+    platform = _platform_from_url(url)
+    if (
+        platform in _cookie_platforms()
+        and cookie_file.is_file()
+        and cookie_file.stat().st_size > 0
+    ):
+        opts["cookiefile"] = str(cookie_file)
+    else:
+        opts.pop("cookiefile", None)
     return opts
 
 
@@ -319,7 +338,7 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
     for candidate in _url_variants(url):
         for profile in _extract_profiles(candidate):
             try:
-                opts = dict(profile)
+                opts = _apply_cookie_policy(dict(profile), candidate)
                 opts["noplaylist"] = True
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(candidate, download=False)
@@ -466,6 +485,35 @@ def _download_image(url: str, target: Path, max_file_mb: int, headers: dict[str,
     return final_path
 
 
+def _direct_image_url(entry: dict) -> str | None:
+    """Prefer original/direct image URLs over thumbnail representations."""
+    for key in ("original_url", "image_url", "url"):
+        value = entry.get(key)
+        if isinstance(value, str) and value.startswith(("http://", "https://")):
+            return value
+
+    formats = entry.get("formats") or []
+    image_formats = [
+        fmt for fmt in formats
+        if isinstance(fmt, dict)
+        and fmt.get("url")
+        and fmt.get("vcodec") in (None, "none")
+        and fmt.get("acodec") in (None, "none")
+    ]
+    if image_formats:
+        best = max(
+            image_formats,
+            key=lambda fmt: (
+                int(fmt.get("width") or 0) * int(fmt.get("height") or 0),
+                int(fmt.get("preference") or 0),
+            ),
+        )
+        value = best.get("url")
+        if isinstance(value, str):
+            return value
+    return None
+
+
 def _best_thumbnail(info: dict) -> dict | None:
     thumbnails = info.get("thumbnails") or []
     valid = [item for item in thumbnails if isinstance(item, dict) and item.get("url")]
@@ -524,7 +572,9 @@ def _download_images(
 
     for index, entry in enumerate(entries, start=1):
         thumbnail = _best_thumbnail(entry)
-        if not thumbnail:
+        direct_url = _direct_image_url(entry)
+        image_url = direct_url or (thumbnail or {}).get("url")
+        if not image_url:
             continue
 
         stem = entry.get("id") or info.get("id") or f"image-{index}"
@@ -534,10 +584,10 @@ def _download_images(
         )[:60]
         target = Path(output_dir) / f"{safe_title}-{stem}"
         image_path = _download_image(
-            thumbnail["url"],
+            image_url,
             target,
             max_file_mb,
-            thumbnail.get("http_headers"),
+            (thumbnail or {}).get("http_headers"),
         )
         images.append(image_path)
         notify(index / max(len(entries), 1) * 100, f"photo {index}/{len(entries)}")
@@ -555,7 +605,7 @@ def _download_sync(
     notify: Callable[[float, str], None],
 ) -> Path | list[Path]:
     selector = _quality_selector(mode)
-    opts = _base_opts()
+    opts = _apply_cookie_policy(_base_opts(), url)
     opts.update(
         {
             "outtmpl": str(Path(output_dir) / "%(title).80s-%(id)s.%(ext)s"),
