@@ -376,6 +376,88 @@ class _OpenGraphParser(HTMLParser):
             self.values.setdefault(key.lower(), content.strip())
 
 
+def _facebook_curl_photo_fallback(url: str) -> tuple[dict, str, dict] | None:
+    """Fetch an accessible Facebook photo page with curl-cffi + exported cookies.
+
+    urllib receives HTTP 400 for some Facebook share/story URLs while a
+    browser-TLS request succeeds. This keeps the fallback fast and only uses
+    the user's own authenticated session.
+    """
+    if curl_requests is None:
+        return None
+    cookie_file = _materialize_facebook_cookie_file()
+    if not cookie_file or not cookie_file.is_file():
+        return None
+
+    try:
+        jar = http.cookiejar.MozillaCookieJar(str(cookie_file))
+        jar.load(ignore_discard=True, ignore_expires=True)
+        cookies = {cookie.name: cookie.value for cookie in jar}
+        response = curl_requests.get(
+            url,
+            impersonate="chrome",
+            allow_redirects=True,
+            timeout=12,
+            cookies=cookies,
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+        final_url = str(response.url)
+        if response.status_code >= 400:
+            raise DownloadError(f"Facebook browser request returned HTTP {response.status_code}.")
+        if "/login" in urlsplit(final_url).path.lower():
+            raise DownloadError("Facebook session was redirected to login.")
+
+        parser = _OpenGraphParser()
+        parser.feed(response.text)
+        video_url = (
+            parser.values.get("og:video:secure_url")
+            or parser.values.get("og:video:url")
+            or parser.values.get("og:video")
+        )
+        image_url = parser.values.get("og:image")
+        if video_url or not image_url:
+            return None
+
+        image_url = urljoin(final_url, image_url)
+        if urlsplit(image_url).scheme not in {"http", "https"}:
+            return None
+
+        headers = {
+            "User-Agent": (_base_opts().get("http_headers") or {}).get("User-Agent", "Mozilla/5.0"),
+            "Referer": final_url,
+        }
+        post_id = next((part for part in urlsplit(final_url).path.split("/") if part), "facebook-photo")
+        info = {
+            "id": post_id,
+            "title": parser.values.get("og:title") or "Facebook photo",
+            "webpage_url": final_url,
+            "thumbnail": image_url,
+            "image_url": image_url,
+            "formats": [{
+                "format_id": "facebook-browser-image",
+                "url": image_url,
+                "ext": "jpg",
+                "vcodec": "none",
+                "acodec": "none",
+                "protocol": urlsplit(image_url).scheme,
+                "http_headers": headers,
+            }],
+        }
+        opts = _apply_cookie_policy(_base_opts(), final_url)
+        logger.info("Facebook browser photo fallback succeeded final_host=%s", urlsplit(final_url).netloc)
+        return info, final_url, opts
+    except Exception as exc:
+        logger.warning(
+            "Facebook browser photo fallback failed error_type=%s error=%s",
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+
 def _facebook_authenticated_photo_fallback(url: str) -> tuple[dict, str, dict] | None:
     """Recover an accessible Facebook photo post using the configured session.
 
@@ -1038,6 +1120,13 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
                 "Facebook native extraction failed error_type=%s error=%r",
                 type(exc).__name__, exc,
             )
+
+        # urllib is frequently rejected by Facebook with HTTP 400. Try the
+        # browser-TLS stack first; keep urllib only as a final compatibility
+        # fallback for environments where curl-cffi cannot fetch the page.
+        fallback = _facebook_curl_photo_fallback(url)
+        if fallback:
+            return fallback
 
         fallback = _facebook_authenticated_photo_fallback(url)
         if fallback:
