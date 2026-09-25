@@ -145,6 +145,14 @@ def _materialize_instagram_cookie_file() -> Path | None:
     )
 
 
+def _materialize_facebook_cookie_file() -> Path | None:
+    return _materialize_cookie_jar(
+        settings.ytdlp_facebook_cookies_b64,
+        settings.ytdlp_facebook_cookies_file,
+        "Facebook",
+    )
+
+
 def _apply_cookie_policy(opts: dict, url: str) -> dict:
     """Apply only the cookie jar explicitly configured for the URL platform."""
     platform = _platform_from_url(url)
@@ -153,6 +161,15 @@ def _apply_cookie_policy(opts: dict, url: str) -> dict:
         cookie_file = _materialize_instagram_cookie_file()
         if cookie_file and cookie_file.is_file() and cookie_file.stat().st_size > 0:
             opts["cookiefile"] = str(cookie_file)
+        else:
+            opts.pop("cookiefile", None)
+        return opts
+
+    if platform == "facebook":
+        cookie_file = _materialize_facebook_cookie_file()
+        if cookie_file and cookie_file.is_file() and cookie_file.stat().st_size > 0:
+            opts["cookiefile"] = str(cookie_file)
+            logger.info("Facebook cookies enabled size=%d bytes", cookie_file.stat().st_size)
         else:
             opts.pop("cookiefile", None)
         return opts
