@@ -304,7 +304,7 @@ def _extract_profiles(url: str) -> list[dict]:
         # curl-cffi is installed via yt-dlp[default,curl-cffi].
         for profile in profiles:
             profile["ignore_no_formats_error"] = True
-            profile["impersonate"] = "chrome-99"
+            profile["impersonate"] = "chrome"
             headers = dict(profile.get("http_headers") or {})
             headers.update({
                 "Accept": (
@@ -792,7 +792,7 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
                 profile_name = "generic" if profile.get("allowed_extractors") else "native"
                 logger.warning(
                     "yt-dlp extraction attempt failed platform=%s profile=%s url=%s error=%s",
-                    _platform_from_url(candidate), profile_name, candidate, exc,
+                    _platform_from_url(candidate), profile_name, candidate, f"{type(exc).__name__}: {exc!r}",
                 )
 
     platform = _platform_from_url(url)
