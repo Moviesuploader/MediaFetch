@@ -445,12 +445,44 @@ def _facebook_curl_photo_fallback(url: str) -> tuple[dict, str, dict] | None:
                     if candidate not in image_candidates:
                         image_candidates.append(candidate)
             if image_candidates:
-                # Facebook commonly embeds several renditions. The longest URL
-                # tends to retain the complete signed query string.
-                image_url = max(image_candidates, key=len)
+                # Validate candidates instead of guessing by URL length.
+                valid_images: list[tuple[int, str]] = []
+                for candidate in image_candidates[:80]:
+                    try:
+                        probe = curl_requests.get(
+                            candidate,
+                            impersonate="chrome",
+                            allow_redirects=True,
+                            timeout=6,
+                            cookies=cookies,
+                            headers={
+                                "Referer": final_url,
+                                "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                            },
+                        )
+                        blob = probe.content
+                        ctype = (probe.headers.get("content-type") or "").lower()
+                        magic = (
+                            blob.startswith(b"\\xff\\xd8\\xff")
+                            or blob.startswith(b"\\x89PNG\\r\\n\\x1a\\n")
+                            or blob.startswith((b"GIF87a", b"GIF89a"))
+                            or (blob.startswith(b"RIFF") and len(blob) >= 12 and blob[8:12] == b"WEBP")
+                        )
+                        if probe.status_code < 400 and ctype.startswith("image/") and magic:
+                            valid_images.append((len(blob), candidate))
+                    except Exception:
+                        continue
+                if not valid_images:
+                    logger.warning(
+                        "Facebook embedded CDN candidates found but none returned valid image bytes candidates=%d",
+                        len(image_candidates),
+                    )
+                    return None
+                _, image_url = max(valid_images, key=lambda item: item[0])
                 logger.info(
-                    "Facebook embedded CDN photo recovered candidates=%d host=%s",
+                    "Facebook embedded CDN photo validated candidates=%d valid=%d host=%s",
                     len(image_candidates),
+                    len(valid_images),
                     urlsplit(image_url).netloc,
                 )
             else:
