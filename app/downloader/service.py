@@ -16,6 +16,10 @@ from typing import Awaitable, Callable
 from urllib.parse import urljoin, urlsplit
 
 import yt_dlp
+try:
+    from curl_cffi import requests as curl_requests
+except ImportError:
+    curl_requests = None
 
 from app.core.config import settings
 
@@ -291,10 +295,10 @@ def _extract_profiles(url: str) -> list[dict]:
         profiles.append(generic)
 
     if platform == "reddit":
-        # Reddit commonly blocks plain datacenter HTTP requests. curl-cffi is
-        # already installed; ask yt-dlp to use browser-like TLS/HTTP behavior.
+        # Do not pass a raw string as yt-dlp's Python "impersonate" option.
+        # That caused AssertionError before any request was sent. The short
+        # share URL is resolved separately with curl-cffi browser impersonation.
         for profile in profiles:
-            profile["impersonate"] = "chrome"
             profile["http_headers"] = {
                 **(profile.get("http_headers") or {}),
                 "Referer": "https://www.reddit.com/",
@@ -780,26 +784,59 @@ def _has_image_media(info: dict) -> bool:
 
 
 def _resolve_reddit_short_url(url: str) -> str:
-    """Resolve Reddit /s/ share links before yt-dlp sees them."""
+    """Resolve Reddit /s/ share links with a real browser-like HTTP stack."""
     parts = urlsplit(url)
     if _platform_from_url(url) != "reddit" or "/s/" not in parts.path:
         return url
+
+    if curl_requests is not None:
+        try:
+            response = curl_requests.get(
+                url,
+                impersonate="chrome",
+                allow_redirects=True,
+                timeout=20,
+                headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+            )
+            resolved = str(response.url)
+            if response.status_code < 400 and resolved and _platform_from_url(resolved) == "reddit":
+                logger.info("Resolved Reddit share URL to %s", resolved)
+                return resolved
+            logger.warning(
+                "Reddit browser resolver returned status=%s final_host=%s",
+                response.status_code,
+                urlsplit(resolved).netloc,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Reddit browser resolver failed error_type=%s error=%r",
+                type(exc).__name__,
+                exc,
+            )
+
+    # Keep a plain HTTP fallback for environments where curl-cffi is absent.
     try:
         request = urllib.request.Request(
             url,
             headers={
-                "User-Agent": "Mozilla/5.0 (compatible; MediaFetch/1.0)",
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/140.0.0.0 Safari/537.36"
+                ),
                 "Accept": "text/html,application/xhtml+xml",
             },
         )
-        opener = urllib.request.build_opener()
-        with opener.open(request, timeout=20) as response:
+        with urllib.request.urlopen(request, timeout=20) as response:
             resolved = response.geturl()
         if resolved and _platform_from_url(resolved) == "reddit":
             logger.info("Resolved Reddit share URL to %s", resolved)
             return resolved
     except Exception as exc:
-        logger.warning("Reddit share URL resolution failed error_type=%s error=%s", type(exc).__name__, exc)
+        logger.warning("Reddit plain resolver failed error_type=%s error=%r", type(exc).__name__, exc)
     return url
 
 
@@ -1038,11 +1075,26 @@ def _download_image(url: str, target: Path, max_file_mb: int, headers: dict[str,
     return final_path
 
 
+def _looks_like_image_url(value: str) -> bool:
+    if not isinstance(value, str) or not value.startswith(("http://", "https://")):
+        return False
+    parts = urlsplit(value)
+    host = parts.netloc.lower()
+    path = parts.path.lower()
+    return (
+        "fbcdn.net" in host
+        or "scontent" in host
+        or path.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif"))
+    )
+
+
 def _direct_image_url(entry: dict) -> str | None:
-    for key in ("original_url", "image_url", "url"):
-        value = entry.get(key)
-        if isinstance(value, str) and value.startswith(("http://", "https://")):
-            return value
+    # Synthetic/photo fallbacks deliberately put the actual CDN URL here.
+    # Prefer it over original_url, which yt-dlp uses for the Facebook POST
+    # webpage itself.
+    value = entry.get("image_url")
+    if isinstance(value, str) and value.startswith(("http://", "https://")):
+        return value
 
     formats = entry.get("formats") or []
     image_formats = [
@@ -1051,6 +1103,7 @@ def _direct_image_url(entry: dict) -> str | None:
         and fmt.get("url")
         and fmt.get("vcodec") in (None, "none")
         and fmt.get("acodec") in (None, "none")
+        and _looks_like_image_url(str(fmt.get("url")))
     ]
     if image_formats:
         best = max(
@@ -1062,6 +1115,14 @@ def _direct_image_url(entry: dict) -> str | None:
         )
         value = best.get("url")
         if isinstance(value, str):
+            return value
+
+    # Only accept original_url/url when it actually looks like image media.
+    # This prevents https://www.facebook.com/.../posts/... HTML from being
+    # downloaded and renamed to .jpg.
+    for key in ("url", "original_url"):
+        value = entry.get(key)
+        if isinstance(value, str) and _looks_like_image_url(value):
             return value
     return None
 
