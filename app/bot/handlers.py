@@ -138,6 +138,25 @@ async def _send_media_message(message, path: Path | None = None, file_id: str | 
         return await message.reply_document(document=media, caption=caption)
 
 
+def _normalize_telegram_photo(path: Path) -> Path:
+    """Decode image bytes and rewrite them as a standard RGB JPEG Telegram accepts."""
+    from PIL import Image, ImageOps
+
+    normalized = path.with_name(f"{path.stem}-telegram.jpg")
+    with Image.open(path) as image:
+        image = ImageOps.exif_transpose(image)
+        if image.mode in {"RGBA", "LA"}:
+            background = Image.new("RGB", image.size, "white")
+            alpha = image.getchannel("A")
+            background.paste(image.convert("RGB"), mask=alpha)
+            image = background
+        elif image.mode != "RGB":
+            image = image.convert("RGB")
+        image.save(normalized, format="JPEG", quality=95, optimize=True)
+    logger.info("Normalized Telegram photo source=%s output=%s size=%d", path.name, normalized.name, normalized.stat().st_size)
+    return normalized
+
+
 async def _send_photo_album(
     message,
     paths: list[Path] | None = None,
@@ -170,15 +189,10 @@ async def _send_photo_album(
         except BadRequest as exc:
             if "image_process_failed" not in str(exc).lower():
                 raise
-            # Do not silently downgrade photos to Telegram documents. A photo
-            # result must remain a photo in chat; surface the processing error
-            # so the downloader can be fixed/normalized instead.
-            logger.warning(
-                "Telegram rejected photo processing path=%s size=%d",
-                path.name,
-                path.stat().st_size,
-            )
-            raise
+            logger.warning("Telegram rejected original photo; normalizing path=%s size=%d", path.name, path.stat().st_size)
+            normalized = await asyncio.to_thread(_normalize_telegram_photo, path)
+            with normalized.open("rb") as photo:
+                return [await message.reply_photo(photo=photo, caption=caption)]
 
     # Telegram albums accept 2–10 media items. max_carousel_items is capped
     # at 10 in settings, so all photo carousel items can be sent together.
