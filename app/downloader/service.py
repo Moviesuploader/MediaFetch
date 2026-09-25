@@ -988,23 +988,76 @@ def _reddit_json_fallback(url: str) -> tuple[dict, str, dict] | None:
 
 
 def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
-    last_error: Exception | None = None
+    """Extract media with short, platform-specific fallback chains.
+
+    Facebook deliberately avoids the old retry matrix: public preview first,
+    then one native yt-dlp attempt with cookies, then one authenticated photo
+    attempt. This keeps failures fast and preserves the most useful root cause.
+    """
     platform = _platform_from_url(url)
     if platform == "reddit":
         url = _resolve_reddit_short_url(url)
 
-    # Photo share posts are common on Facebook and yt-dlp is video-oriented.
-    # Try the lightweight public preview once before the expensive 3-host x
-    # 2-profile extraction matrix. If it yields a real photo/video, return
-    # immediately; otherwise native extraction remains available.
-    if platform == "facebook":
-        fast = _meta_public_page_fallback(url)
-        if fast:
-            logger.info("Facebook fast public-page fallback succeeded url=%s", url)
-            return fast
+    errors: list[tuple[str, Exception]] = []
 
-    extraction_candidates = [url] if platform == "facebook" else _url_variants(url)
-    for candidate in extraction_candidates:
+    if platform == "facebook":
+        try:
+            fast = _meta_public_page_fallback(url)
+            if fast:
+                logger.info("Facebook fast public-page fallback succeeded url=%s", url)
+                return fast
+        except Exception as exc:
+            errors.append(("public-preview", exc))
+
+        # yt-dlp's generic Facebook redirect path commonly ends at story.php
+        # and reports Unsupported URL. It adds latency without helping photo
+        # posts, so only the native extractor is attempted here.
+        profile = _extract_profiles(url)[0]
+        try:
+            opts = _apply_cookie_policy(dict(profile), url)
+            opts["noplaylist"] = True
+            # Fail quickly on Meta blocking; outer bot inspection already has
+            # its own timeout.
+            opts["socket_timeout"] = min(int(opts.get("socket_timeout") or 30), 12)
+            opts["retries"] = 1
+            opts["extractor_retries"] = 1
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+
+            if _has_video_format(info):
+                return info, url, opts
+            photo = _facebook_photo_from_metadata(info, url, opts)
+            if photo:
+                return photo
+            if _has_image_media(info):
+                return info, url, opts
+            raise DownloadError("Facebook extractor returned metadata but no downloadable media.")
+        except Exception as exc:
+            errors.append(("native-extractor", exc))
+            logger.warning(
+                "Facebook native extraction failed error_type=%s error=%r",
+                type(exc).__name__, exc,
+            )
+
+        fallback = _facebook_authenticated_photo_fallback(url)
+        if fallback:
+            return fallback
+
+        # Emit one compact root-cause line instead of six near-identical
+        # www/m/mbasic + native/generic failures.
+        detail = " | ".join(
+            f"{stage}={type(exc).__name__}:{str(exc)[:220]}"
+            for stage, exc in errors[-3:]
+        )
+        logger.error("Facebook extraction exhausted url=%s diagnostics=%s", url, detail or "no media response")
+        last = errors[-1][1] if errors else None
+        raise DownloadError(
+            "Facebook did not return downloadable media. "
+            + (f"Root cause: {type(last).__name__}: {str(last)[:300]}" if last else "The post may be unavailable to this server.")
+        )
+
+    last_error: Exception | None = None
+    for candidate in _url_variants(url):
         for profile in _extract_profiles(candidate):
             try:
                 opts = _apply_cookie_policy(dict(profile), candidate)
@@ -1014,10 +1067,7 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
 
                 if not _has_video_format(info):
                     entries = info.get("entries") or []
-                    # Facebook photo posts are not playlists; repeating the
-                    # request only adds latency and can trigger another Meta
-                    # anti-bot response.
-                    if _platform_from_url(candidate) != "facebook" and (not entries or len(entries) <= 1):
+                    if not entries or len(entries) <= 1:
                         playlist_opts = dict(opts)
                         playlist_opts["noplaylist"] = False
                         with yt_dlp.YoutubeDL(playlist_opts) as ydl:
@@ -1026,16 +1076,9 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
 
                 if _has_video_format(info):
                     return info, candidate, opts
-
                 candidate_platform = _platform_from_url(candidate)
-                if candidate_platform == "facebook":
-                    photo = _facebook_photo_from_metadata(info, candidate, opts)
-                    if photo:
-                        return photo
-
-                if candidate_platform in {"facebook", "instagram", "pinterest", "threads"} and _has_image_media(info):
+                if candidate_platform in {"instagram", "pinterest", "threads"} and _has_image_media(info):
                     return info, candidate, opts
-
                 raise DownloadError("Extractor returned no downloadable media formats.")
             except Exception as exc:
                 last_error = exc
@@ -1057,24 +1100,14 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
                 logger.info("Instagram public-page fallback succeeded url=%s", candidate)
                 return fallback
 
-    if platform == "facebook":
-        fallback = _facebook_authenticated_photo_fallback(url)
-        if fallback:
-            return fallback
-
-    if platform in {"facebook", "threads"}:
+    if platform == "threads":
         fallback = _meta_public_page_fallback(url)
         if fallback:
-            logger.info(
-                "%s public-page fallback succeeded url=%s",
-                platform.capitalize(),
-                url,
-            )
+            logger.info("Threads public-page fallback succeeded url=%s", url)
             return fallback
 
     logger.error("yt-dlp extraction failed after all fallbacks url=%s error=%s", url, last_error)
     raise last_error or DownloadError("Unable to extract media.")
-
 
 def _extract_info_sync(url: str) -> dict:
     info, _, _ = _extract_with_fallback(url)
