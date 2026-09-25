@@ -298,11 +298,25 @@ def _extract_profiles(url: str) -> list[dict]:
             profiles.append(youtube_profile)
 
     if platform == "facebook":
-        # Facebook's yt-dlp extractor is video-oriented and otherwise raises
-        # "No video formats found" for photo posts before we can inspect the
-        # page metadata. Preserve metadata so the image path can handle it.
+        # Facebook serves a different response to plain Python HTTP clients
+        # when authenticated cookies are present. yt-dlp's Facebook extractor
+        # currently recommends browser impersonation for this path.
+        # curl-cffi is installed via yt-dlp[default,curl-cffi].
         for profile in profiles:
             profile["ignore_no_formats_error"] = True
+            profile["impersonate"] = "chrome-99"
+            headers = dict(profile.get("http_headers") or {})
+            headers.update({
+                "Accept": (
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                    "image/avif,image/webp,*/*;q=0.8"
+                ),
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Upgrade-Insecure-Requests": "1",
+            })
+            profile["http_headers"] = headers
 
     if platform == "instagram":
         instagram_generic = _base_opts()
@@ -750,7 +764,10 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
 
                 if not _has_video_format(info):
                     entries = info.get("entries") or []
-                    if not entries or len(entries) <= 1:
+                    # Facebook photo posts are not playlists; repeating the
+                    # request only adds latency and can trigger another Meta
+                    # anti-bot response.
+                    if _platform_from_url(candidate) != "facebook" and (not entries or len(entries) <= 1):
                         playlist_opts = dict(opts)
                         playlist_opts["noplaylist"] = False
                         with yt_dlp.YoutubeDL(playlist_opts) as ydl:
