@@ -7,6 +7,7 @@ import re
 import secrets
 from pathlib import Path
 
+from telegram.error import BadRequest
 from telegram import InputMediaPhoto, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
@@ -162,8 +163,23 @@ async def _send_photo_album(
         raise ValueError("paths or file_ids are required")
 
     if len(paths) == 1:
-        with paths[0].open("rb") as photo:
-            return [await message.reply_photo(photo=photo, caption=caption)]
+        path = paths[0]
+        try:
+            with path.open("rb") as photo:
+                return [await message.reply_photo(photo=photo, caption=caption)]
+        except BadRequest as exc:
+            # Facebook/CDN images may be AVIF/WebP or otherwise rejected by
+            # Telegram's photo processor even when stored with a .jpg suffix.
+            # Preserve delivery by sending the original bytes as a document.
+            if "image_process_failed" not in str(exc).lower():
+                raise
+            logger.warning(
+                "Telegram rejected photo processing; falling back to document path=%s size=%d",
+                path.name,
+                path.stat().st_size,
+            )
+            with path.open("rb") as document:
+                return [await message.reply_document(document=document, caption=caption)]
 
     # Telegram albums accept 2–10 media items. max_carousel_items is capped
     # at 10 in settings, so all photo carousel items can be sent together.
