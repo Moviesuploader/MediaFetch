@@ -215,8 +215,12 @@ def _url_variants(url: str) -> list[str]:
                 add_variant(raw_host, new_path=embed_path, query={})
 
         elif host == "facebook.com" or host.endswith(".facebook.com"):
-            if raw_host != "m.facebook.com":
-                add_variant("m.facebook.com")
+            # Facebook share links can behave differently across the desktop,
+            # mobile and basic public surfaces. Try URL-shape variants only;
+            # access controls are still respected.
+            for fb_host in ("www.facebook.com", "m.facebook.com", "mbasic.facebook.com"):
+                if raw_host != fb_host:
+                    add_variant(fb_host)
 
         elif host in {"twitter.com", "mobile.twitter.com", "m.twitter.com", "x.com", "mobile.x.com"}:
             if raw_host != "x.com":
@@ -330,21 +334,51 @@ def _meta_public_page_fallback(url: str) -> tuple[dict, str, dict] | None:
         return None
 
     try:
-        user_agent = (
+        browser_user_agent = (
             "Mozilla/5.0 (X11; Linux x86_64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/146.0 Safari/537.36"
         )
-        request = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": user_agent,
-                "Accept": "text/html,application/xhtml+xml",
-                "Accept-Language": "en-US,en;q=0.9",
-            },
-        )
-        with urllib.request.urlopen(request, timeout=30) as response:
-            html = response.read(8 * 1024 * 1024).decode("utf-8", "replace")
+        # Public Facebook share links sometimes send a normal browser to a
+        # login interstitial while still exposing OpenGraph data to link
+        # preview crawlers. This does not authenticate or bypass private
+        # content; it only asks for metadata Facebook makes public.
+        user_agents = [browser_user_agent]
+        if platform == "facebook":
+            user_agents.extend(
+                [
+                    "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+                    "Facebot",
+                ]
+            )
+
+        html = None
+        fetch_error: Exception | None = None
+        for user_agent in user_agents:
+            try:
+                request = urllib.request.Request(
+                    url,
+                    headers={
+                        "User-Agent": user_agent,
+                        "Accept": "text/html,application/xhtml+xml",
+                        "Accept-Language": "en-US,en;q=0.9",
+                    },
+                )
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    final_url = response.geturl()
+                    # A login page is not media metadata. Try the next public
+                    # preview profile instead of treating it as a valid page.
+                    if platform == "facebook" and "/login/" in urlsplit(final_url).path:
+                        continue
+                    html = response.read(8 * 1024 * 1024).decode("utf-8", "replace")
+                    break
+            except Exception as exc:
+                fetch_error = exc
+
+        if html is None:
+            if fetch_error:
+                raise fetch_error
+            return None
 
         parser = _OpenGraphParser()
         parser.feed(html)
@@ -380,7 +414,7 @@ def _meta_public_page_fallback(url: str) -> tuple[dict, str, dict] | None:
                 "acodec": "unknown",
                 "protocol": urlsplit(video_url).scheme,
                 "http_headers": {
-                    "User-Agent": user_agent,
+                    "User-Agent": browser_user_agent,
                     "Referer": url,
                 },
             }
@@ -396,7 +430,7 @@ def _meta_public_page_fallback(url: str) -> tuple[dict, str, dict] | None:
                 "acodec": "none",
                 "protocol": urlsplit(image_url).scheme,
                 "http_headers": {
-                    "User-Agent": user_agent,
+                    "User-Agent": browser_user_agent,
                     "Referer": url,
                 },
             }
@@ -414,6 +448,7 @@ def _meta_public_page_fallback(url: str) -> tuple[dict, str, dict] | None:
             "title": title,
             "webpage_url": url,
             "thumbnail": image_url,
+            "image_url": image_url if not video_url else None,
             "formats": [fmt],
         }, url, _base_opts()
     except Exception as exc:
@@ -421,6 +456,7 @@ def _meta_public_page_fallback(url: str) -> tuple[dict, str, dict] | None:
             "%s public-page fallback failed error_type=%s error=%s",
             platform.capitalize(),
             type(exc).__name__,
+            exc,
         )
         return None
 
@@ -551,7 +587,7 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
                     return info, candidate, opts
 
                 candidate_platform = _platform_from_url(candidate)
-                if candidate_platform in {"instagram", "pinterest"} and _has_image_media(info):
+                if candidate_platform in {"facebook", "instagram", "pinterest", "threads"} and _has_image_media(info):
                     return info, candidate, opts
 
                 raise DownloadError("Extractor returned no downloadable media formats.")
