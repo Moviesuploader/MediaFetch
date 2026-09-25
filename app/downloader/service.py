@@ -1072,6 +1072,17 @@ def _download_sync(
     notify: Callable[[float, str], None],
 ) -> Path | list[Path]:
     selector = _quality_selector(mode)
+    platform = _platform_from_url(url)
+    if platform == "facebook" and mode != "audio":
+        if mode == "best":
+            selector = "bv+ba/b[vcodec!=none][ext=mp4]/b[vcodec!=none]"
+        elif mode.endswith("p") and mode[:-1].isdigit():
+            height = int(mode[:-1])
+            selector = (
+                f"bv[height<={height}]+ba/"
+                f"b[vcodec!=none][height<={height}][ext=mp4]/"
+                f"b[vcodec!=none][height<={height}]"
+            )
     opts = _apply_cookie_policy(_base_opts(), url)
     opts.update(
         {
@@ -1143,7 +1154,10 @@ def _download_sync(
             raise DownloadError(str(exc)) from exc
 
         if mode == "photo" or (mode != "audio" and not _has_video_format(info)):
-            if mode != "photo":
+            # If extraction/fallback already produced an image URL, use it
+            # directly. Re-extracting Facebook photo posts just sends them
+            # back through yt-dlp's video-oriented Facebook extractor.
+            if mode != "photo" and not _has_image_media(info):
                 opts["noplaylist"] = False
                 with yt_dlp.YoutubeDL(opts) as image_ydl:
                     info = image_ydl.extract_info(selected_url, download=False)
@@ -1158,14 +1172,19 @@ def _download_sync(
             ydl.download([selected_url])
 
             expected = Path(ydl.prepare_filename(info))
-            candidates = [
-                expected,
-                expected.with_suffix(".mp4"),
-                expected.with_suffix(".mp3"),
-                expected.with_suffix(".m4a"),
-                expected.with_suffix(".webm"),
-                expected.with_suffix(".mkv"),
-            ]
+            if mode == "audio":
+                candidates = [
+                    expected.with_suffix(".mp3"),
+                    expected.with_suffix(".m4a"),
+                    expected,
+                ]
+            else:
+                candidates = [
+                    expected.with_suffix(".mp4"),
+                    expected.with_suffix(".mkv"),
+                    expected.with_suffix(".webm"),
+                    expected,
+                ]
             for candidate in candidates:
                 if candidate.exists():
                     notify(100, "ready")
