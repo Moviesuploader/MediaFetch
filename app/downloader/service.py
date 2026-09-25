@@ -715,8 +715,26 @@ def _facebook_photo_from_metadata(info: dict, url: str, opts: dict) -> tuple[dic
     if not candidates:
         return None
 
-    # Prefer the first image yt-dlp/Facebook identifies as the main image.
-    image_url, headers = candidates[0]
+    # Do not use Facebook page/profile URLs as image downloads. Prefer CDN
+    # image URLs; thumbnail metadata can otherwise contain the post URL itself,
+    # which later returns HTTP 400 when _download_image tries to fetch it.
+    def image_score(item: tuple[str, dict[str, str]]) -> tuple[int, int]:
+        candidate, _ = item
+        parts = urlsplit(candidate)
+        host = parts.netloc.lower()
+        path = parts.path.lower()
+        cdn = int("fbcdn.net" in host or "scontent" in host)
+        image_ext = int(path.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif")))
+        return (cdn, image_ext)
+
+    candidates = [
+        item for item in candidates
+        if _platform_from_url(item[0]) != "facebook"
+        and urlsplit(item[0]).scheme in {"http", "https"}
+    ]
+    if not candidates:
+        return None
+    image_url, headers = max(candidates, key=image_score)
     merged_headers = {
         "User-Agent": (_base_opts().get("http_headers") or {}).get("User-Agent", "Mozilla/5.0"),
         "Referer": info.get("webpage_url") or url,
@@ -927,13 +945,20 @@ async def download_media(
 
 
 def _download_image(url: str, target: Path, max_file_mb: int, headers: dict[str, str] | None = None) -> Path:
-    request = urllib.request.Request(
-        url,
-        headers={"User-Agent": "Mozilla/5.0", **(headers or {})},
-    )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        data = response.read()
-        content_type = response.headers.get_content_type()
+    request_headers = {"User-Agent": "Mozilla/5.0", **(headers or {})}
+    request = urllib.request.Request(url, headers=request_headers)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            data = response.read()
+            content_type = response.headers.get_content_type()
+    except Exception as exc:
+        logger.warning(
+            "Image download failed host=%s error_type=%s error=%s",
+            urlsplit(url).netloc,
+            type(exc).__name__,
+            exc,
+        )
+        raise
 
     if len(data) > max_file_mb * 1024 * 1024:
         raise DownloadError(f"Image exceeds the {max_file_mb} MB upload limit.")
