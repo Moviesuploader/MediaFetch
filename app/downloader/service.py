@@ -410,8 +410,9 @@ def _facebook_curl_photo_fallback(url: str) -> tuple[dict, str, dict] | None:
         if "/login" in urlsplit(final_url).path.lower():
             raise DownloadError("Facebook session was redirected to login.")
 
+        html = response.text
         parser = _OpenGraphParser()
-        parser.feed(response.text)
+        parser.feed(html)
         video_url = (
             parser.values.get("og:video:secure_url")
             or parser.values.get("og:video:url")
@@ -422,13 +423,44 @@ def _facebook_curl_photo_fallback(url: str) -> tuple[dict, str, dict] | None:
             logger.info("Facebook browser fallback found video metadata; leaving video handling to extractor")
             return None
         if not image_url:
-            logger.warning(
-                "Facebook browser fallback page has no og:image status=%s final_host=%s body_bytes=%d",
-                response.status_code,
-                urlsplit(final_url).netloc,
-                len(response.content),
+            # Logged-in Facebook pages often omit OpenGraph tags but embed the
+            # full-resolution CDN URL inside Relay/Comet JSON. Extract only
+            # Meta CDN image URLs; never treat arbitrary page URLs as photos.
+            import re
+            from html import unescape
+            decoded = unescape(html).replace("\\/", "/").replace("\\u0025", "%").replace("\\u0026", "&")
+            raw_candidates = re.findall(
+                r'https?://[^"\\\\\s<>]+',
+                decoded,
+                flags=re.IGNORECASE,
             )
-            return None
+            image_candidates: list[str] = []
+            for candidate in raw_candidates:
+                candidate = candidate.rstrip("),]}")
+                host = urlsplit(candidate).netloc.lower()
+                low = candidate.lower()
+                if ("fbcdn.net" in host or "scontent" in host) and (
+                    ".jpg" in low or ".jpeg" in low or ".png" in low or ".webp" in low
+                ):
+                    if candidate not in image_candidates:
+                        image_candidates.append(candidate)
+            if image_candidates:
+                # Facebook commonly embeds several renditions. The longest URL
+                # tends to retain the complete signed query string.
+                image_url = max(image_candidates, key=len)
+                logger.info(
+                    "Facebook embedded CDN photo recovered candidates=%d host=%s",
+                    len(image_candidates),
+                    urlsplit(image_url).netloc,
+                )
+            else:
+                logger.warning(
+                    "Facebook browser fallback page has no photo CDN candidate status=%s final_host=%s body_bytes=%d",
+                    response.status_code,
+                    urlsplit(final_url).netloc,
+                    len(response.content),
+                )
+                return None
 
         image_url = urljoin(final_url, image_url)
         if urlsplit(image_url).scheme not in {"http", "https"}:
