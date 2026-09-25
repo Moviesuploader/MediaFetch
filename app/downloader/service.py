@@ -558,15 +558,40 @@ def _meta_public_page_fallback(url: str) -> tuple[dict, str, dict] | None:
             if urlsplit(image_url).scheme not in {"http", "https"}:
                 return None
             image_host = urlsplit(image_url).netloc.lower()
-            # lookaside.fbsbx.com is frequently a Facebook redirect/page URL,
-            # not raw photo bytes. Accept only actual Meta image CDN URLs here.
-            if platform == "facebook" and not (
+            # Facebook often exposes og:image through lookaside.fbsbx.com.
+            # Resolve that redirect with the same browser-like stack, but only
+            # trust it when it lands on actual image bytes / Meta image CDN.
+            if platform == "facebook" and "lookaside.fbsbx.com" in image_host and curl_requests is not None:
+                try:
+                    resolved = curl_requests.get(
+                        image_url,
+                        impersonate="chrome",
+                        allow_redirects=True,
+                        timeout=20,
+                        headers={"Referer": url, "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"},
+                    )
+                    resolved_type = (resolved.headers.get("content-type") or "").lower()
+                    resolved_url = str(resolved.url)
+                    resolved_host = urlsplit(resolved_url).netloc.lower()
+                    if resolved.status_code < 400 and resolved_type.startswith("image/") and (
+                        "fbcdn.net" in resolved_host or "scontent" in resolved_host
+                    ):
+                        image_url = resolved_url
+                        image_host = resolved_host
+                        logger.info("Facebook lookaside image resolved host=%s", resolved_host)
+                    else:
+                        logger.warning(
+                            "Facebook lookaside did not resolve to image status=%s content_type=%s final_host=%s",
+                            resolved.status_code, resolved_type or "unknown", resolved_host,
+                        )
+                        return None
+                except Exception as exc:
+                    logger.warning("Facebook lookaside resolver failed error_type=%s error=%r", type(exc).__name__, exc)
+                    return None
+            elif platform == "facebook" and not (
                 "fbcdn.net" in image_host or "scontent" in image_host
             ):
-                logger.warning(
-                    "Facebook OpenGraph image rejected non-CDN host=%s",
-                    image_host,
-                )
+                logger.warning("Facebook OpenGraph image rejected non-CDN host=%s", image_host)
                 return None
             fmt = {
                 "format_id": f"{platform}-og-image",
@@ -871,10 +896,7 @@ def _reddit_json_fallback(url: str) -> tuple[dict, str, dict] | None:
     # Reddit's share URL can be blocked while old.reddit sometimes exposes the
     # same public redirect/metadata surface.
     if "/s/" in parts.path:
-        candidates.extend([
-            url.replace("www.reddit.com", "old.reddit.com"),
-            url.replace("reddit.com", "old.reddit.com"),
-        ])
+        candidates.append(url.replace("www.reddit.com", "old.reddit.com"))
 
     seen = set()
     for candidate in candidates:
