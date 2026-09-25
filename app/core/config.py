@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     # Optional separate Instagram cookie jar for sites that require login.
     ytdlp_instagram_cookies_file: str = "/tmp/mediafetch-instagram-cookies.txt"
     ytdlp_instagram_cookies_b64: str = ""
+    # Optional dedicated Facebook cookie jar. Keep this separate from YouTube
+    # and Instagram so credentials are never sent to the wrong platform.
+    ytdlp_facebook_cookies_file: str = "/tmp/mediafetch-facebook-cookies.txt"
+    ytdlp_facebook_cookies_b64: str = ""
     # Comma-separated platforms allowed to use imported cookies. Keep social
     # platforms cookie-free by default; YouTube is the common cookie-dependent case.
     ytdlp_cookie_platforms: str = "youtube"
