@@ -7,6 +7,7 @@ import mimetypes
 import time
 import logging
 import urllib.request
+import http.cookiejar
 from html.parser import HTMLParser
 from dataclasses import dataclass
 from pathlib import Path
@@ -340,6 +341,88 @@ class _OpenGraphParser(HTMLParser):
             self.values.setdefault(key.lower(), content.strip())
 
 
+def _facebook_authenticated_photo_fallback(url: str) -> tuple[dict, str, dict] | None:
+    """Recover an accessible Facebook photo post using the configured session.
+
+    This only uses the user's exported Facebook cookies and does not bypass
+    Facebook audience/privacy controls.
+    """
+    cookie_file = _materialize_facebook_cookie_file()
+    if not cookie_file or not cookie_file.is_file():
+        return None
+
+    try:
+        jar = http.cookiejar.MozillaCookieJar(str(cookie_file))
+        jar.load(ignore_discard=True, ignore_expires=True)
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+        user_agent = (
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/146.0.0.0 Safari/537.36"
+        )
+        request = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": user_agent,
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+        with opener.open(request, timeout=30) as response:
+            final_url = response.geturl()
+            if "/login/" in urlsplit(final_url).path or "/login.php" in urlsplit(final_url).path:
+                return None
+            html = response.read(12 * 1024 * 1024).decode("utf-8", "replace")
+
+        parser = _OpenGraphParser()
+        parser.feed(html)
+        image_url = parser.values.get("og:image")
+        video_url = (
+            parser.values.get("og:video:secure_url")
+            or parser.values.get("og:video:url")
+            or parser.values.get("og:video")
+        )
+        if video_url or not image_url:
+            return None
+
+        image_url = urljoin(final_url, image_url)
+        if urlsplit(image_url).scheme not in {"http", "https"}:
+            return None
+
+        post_id = next(
+            (part for part in urlsplit(final_url).path.split("/") if part),
+            "facebook-photo",
+        )
+        title = parser.values.get("og:title") or "Facebook photo"
+        headers = {"User-Agent": user_agent, "Referer": final_url}
+        info = {
+            "id": post_id,
+            "title": title,
+            "webpage_url": final_url,
+            "thumbnail": image_url,
+            "image_url": image_url,
+            "formats": [{
+                "format_id": "facebook-auth-image",
+                "url": image_url,
+                "ext": "jpg",
+                "vcodec": "none",
+                "acodec": "none",
+                "protocol": urlsplit(image_url).scheme,
+                "http_headers": headers,
+            }],
+        }
+        opts = _apply_cookie_policy(_base_opts(), final_url)
+        logger.info("Facebook authenticated photo fallback succeeded url=%s", final_url)
+        return info, final_url, opts
+    except Exception as exc:
+        logger.warning(
+            "Facebook authenticated photo fallback failed error_type=%s error=%s",
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+
 def _meta_public_page_fallback(url: str) -> tuple[dict, str, dict] | None:
     """Recover public Meta/Threads media from OpenGraph page metadata.
 
@@ -623,6 +706,12 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
             fallback = _instagram_web_fallback(candidate)
             if fallback:
                 logger.info("Instagram public-page fallback succeeded url=%s", candidate)
+                return fallback
+
+    if platform == "facebook":
+        for candidate in _url_variants(url):
+            fallback = _facebook_authenticated_photo_fallback(candidate)
+            if fallback:
                 return fallback
 
     if platform in {"facebook", "threads"}:
