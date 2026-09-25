@@ -297,6 +297,13 @@ def _extract_profiles(url: str) -> list[dict]:
             }
             profiles.append(youtube_profile)
 
+    if platform == "facebook":
+        # Facebook's yt-dlp extractor is video-oriented and otherwise raises
+        # "No video formats found" for photo posts before we can inspect the
+        # page metadata. Preserve metadata so the image path can handle it.
+        for profile in profiles:
+            profile["ignore_no_formats_error"] = True
+
     if platform == "instagram":
         instagram_generic = _base_opts()
         instagram_generic["allowed_extractors"] = ["generic"]
@@ -652,6 +659,73 @@ def _instagram_web_fallback(url: str) -> tuple[dict, str, dict] | None:
         return None
 
 
+def _facebook_image_urls(info: dict) -> list[tuple[str, dict[str, str]]]:
+    """Collect image candidates already exposed in Facebook/yt-dlp metadata."""
+    found: list[tuple[str, dict[str, str]]] = []
+    seen: set[str] = set()
+
+    def walk(value) -> None:
+        if isinstance(value, dict):
+            headers = value.get("http_headers")
+            safe_headers = headers if isinstance(headers, dict) else {}
+            for key in ("image_url", "original_url", "thumbnail"):
+                candidate = value.get(key)
+                if isinstance(candidate, str) and candidate.startswith(("http://", "https://")):
+                    if candidate not in seen:
+                        seen.add(candidate)
+                        found.append((candidate, safe_headers))
+            for thumb in value.get("thumbnails") or []:
+                if isinstance(thumb, dict):
+                    candidate = thumb.get("url")
+                    if isinstance(candidate, str) and candidate.startswith(("http://", "https://")):
+                        if candidate not in seen:
+                            seen.add(candidate)
+                            thumb_headers = thumb.get("http_headers")
+                            found.append((
+                                candidate,
+                                thumb_headers if isinstance(thumb_headers, dict) else safe_headers,
+                            ))
+            for nested_key in ("entries", "formats", "images", "attachments"):
+                nested = value.get(nested_key)
+                if isinstance(nested, (dict, list, tuple)):
+                    walk(nested)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                walk(item)
+
+    walk(info)
+    return found
+
+
+def _facebook_photo_from_metadata(info: dict, url: str, opts: dict) -> tuple[dict, str, dict] | None:
+    candidates = _facebook_image_urls(info)
+    if not candidates:
+        return None
+
+    # Prefer the first image yt-dlp/Facebook identifies as the main image.
+    image_url, headers = candidates[0]
+    merged_headers = {
+        "User-Agent": (_base_opts().get("http_headers") or {}).get("User-Agent", "Mozilla/5.0"),
+        "Referer": info.get("webpage_url") or url,
+        **headers,
+    }
+    photo_info = dict(info)
+    photo_info["thumbnail"] = image_url
+    photo_info["image_url"] = image_url
+    photo_info["formats"] = [{
+        "format_id": "facebook-metadata-image",
+        "url": image_url,
+        "ext": "jpg",
+        "vcodec": "none",
+        "acodec": "none",
+        "protocol": urlsplit(image_url).scheme,
+        "http_headers": merged_headers,
+    }]
+    photo_info.setdefault("title", "Facebook photo")
+    logger.info("Facebook photo metadata fallback succeeded url=%s", url)
+    return photo_info, url, opts
+
+
 def _has_image_media(info: dict) -> bool:
     if _best_thumbnail(info) or _direct_image_url(info):
         return True
@@ -687,6 +761,11 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
                     return info, candidate, opts
 
                 candidate_platform = _platform_from_url(candidate)
+                if candidate_platform == "facebook":
+                    photo = _facebook_photo_from_metadata(info, candidate, opts)
+                    if photo:
+                        return photo
+
                 if candidate_platform in {"facebook", "instagram", "pinterest", "threads"} and _has_image_media(info):
                     return info, candidate, opts
 
@@ -949,11 +1028,17 @@ def _download_images(
             ch if ch.isalnum() or ch in "._-" else "_" for ch in str(title)
         )[:60]
         target = Path(output_dir) / f"{safe_title}-{stem}"
+        image_headers = (thumbnail or {}).get("http_headers") or entry.get("http_headers")
+        if direct_url:
+            for fmt in entry.get("formats") or []:
+                if isinstance(fmt, dict) and fmt.get("url") == direct_url:
+                    image_headers = fmt.get("http_headers") or image_headers
+                    break
         image_path = _download_image(
             image_url,
             target,
             max_file_mb,
-            (thumbnail or {}).get("http_headers"),
+            image_headers,
         )
         images.append(image_path)
         notify(index / max(len(entries), 1) * 100, f"photo {index}/{len(entries)}")
