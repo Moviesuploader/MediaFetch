@@ -7,6 +7,7 @@ import mimetypes
 import time
 import logging
 import urllib.request
+import urllib.error
 import http.cookiejar
 from html.parser import HTMLParser
 from dataclasses import dataclass
@@ -288,6 +289,16 @@ def _extract_profiles(url: str) -> list[dict]:
         generic = _base_opts()
         generic["allowed_extractors"] = ["generic"]
         profiles.append(generic)
+
+    if platform == "reddit":
+        # Reddit commonly blocks plain datacenter HTTP requests. curl-cffi is
+        # already installed; ask yt-dlp to use browser-like TLS/HTTP behavior.
+        for profile in profiles:
+            profile["impersonate"] = "chrome"
+            profile["http_headers"] = {
+                **(profile.get("http_headers") or {}),
+                "Referer": "https://www.reddit.com/",
+            }
 
     if platform == "youtube":
         for clients in (["default", "web_embedded"], ["default", "mweb"]):
@@ -768,8 +779,34 @@ def _has_image_media(info: dict) -> bool:
     )
 
 
+def _resolve_reddit_short_url(url: str) -> str:
+    """Resolve Reddit /s/ share links before yt-dlp sees them."""
+    parts = urlsplit(url)
+    if _platform_from_url(url) != "reddit" or "/s/" not in parts.path:
+        return url
+    try:
+        request = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; MediaFetch/1.0)",
+                "Accept": "text/html,application/xhtml+xml",
+            },
+        )
+        opener = urllib.request.build_opener()
+        with opener.open(request, timeout=20) as response:
+            resolved = response.geturl()
+        if resolved and _platform_from_url(resolved) == "reddit":
+            logger.info("Resolved Reddit share URL to %s", resolved)
+            return resolved
+    except Exception as exc:
+        logger.warning("Reddit share URL resolution failed error_type=%s error=%s", type(exc).__name__, exc)
+    return url
+
+
 def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
     last_error: Exception | None = None
+    if _platform_from_url(url) == "reddit":
+        url = _resolve_reddit_short_url(url)
 
     for candidate in _url_variants(url):
         for profile in _extract_profiles(candidate):
@@ -963,7 +1000,36 @@ def _download_image(url: str, target: Path, max_file_mb: int, headers: dict[str,
     if len(data) > max_file_mb * 1024 * 1024:
         raise DownloadError(f"Image exceeds the {max_file_mb} MB upload limit.")
 
+    # Never trust a .jpg suffix alone. Meta/CDN URLs can return an HTML
+    # interstitial/error page with HTTP 200; saving that as .jpg later makes
+    # Telegram and Pillow fail with Image_process_failed/UnidentifiedImageError.
+    image_signatures = (
+        data.startswith(b"\\xff\\xd8\\xff"),
+        data.startswith(b"\\x89PNG\\r\\n\\x1a\\n"),
+        data.startswith((b"GIF87a", b"GIF89a")),
+        data.startswith(b"RIFF") and data[8:12] == b"WEBP",
+    )
+    content_type = (content_type or "").lower()
+    if not content_type.startswith("image/") or not any(image_signatures):
+        sample = data[:160].lstrip().lower()
+        logger.warning(
+            "Rejected non-image response host=%s content_type=%s bytes=%d html_like=%s",
+            urlsplit(url).netloc,
+            content_type or "unknown",
+            len(data),
+            sample.startswith((b"<html", b"<!doctype", b"<script")),
+        )
+        raise DownloadError("The source returned a webpage instead of image bytes.")
+
     extension = mimetypes.guess_extension(content_type) or Path(url.split("?", 1)[0]).suffix
+    if data.startswith(b"\\xff\\xd8\\xff"):
+        extension = ".jpg"
+    elif data.startswith(b"\\x89PNG"):
+        extension = ".png"
+    elif data.startswith((b"GIF87a", b"GIF89a")):
+        extension = ".gif"
+    elif data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        extension = ".webp"
     if extension.lower() not in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
         extension = ".jpg"
 
