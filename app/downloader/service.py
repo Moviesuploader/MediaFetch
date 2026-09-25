@@ -557,6 +557,17 @@ def _meta_public_page_fallback(url: str) -> tuple[dict, str, dict] | None:
             image_url = urljoin(url, image_url)
             if urlsplit(image_url).scheme not in {"http", "https"}:
                 return None
+            image_host = urlsplit(image_url).netloc.lower()
+            # lookaside.fbsbx.com is frequently a Facebook redirect/page URL,
+            # not raw photo bytes. Accept only actual Meta image CDN URLs here.
+            if platform == "facebook" and not (
+                "fbcdn.net" in image_host or "scontent" in image_host
+            ):
+                logger.warning(
+                    "Facebook OpenGraph image rejected non-CDN host=%s",
+                    image_host,
+                )
+                return None
             fmt = {
                 "format_id": f"{platform}-og-image",
                 "url": image_url,
@@ -840,6 +851,120 @@ def _resolve_reddit_short_url(url: str) -> str:
     return url
 
 
+def _reddit_json_fallback(url: str) -> tuple[dict, str, dict] | None:
+    """Fetch public Reddit post metadata from JSON surfaces.
+
+    This does not bypass private/quarantined/login-only content. It is a
+    fallback for Reddit blocking the normal HTML/share-link surface on
+    datacenter IPs.
+    """
+    if curl_requests is None:
+        return None
+    candidates = [url]
+    parts = urlsplit(url)
+    if "/s/" not in parts.path:
+        clean = url.split("?", 1)[0].rstrip("/")
+        candidates.extend([
+            clean + ".json?raw_json=1",
+            clean + "/.json?raw_json=1",
+        ])
+    # Reddit's share URL can be blocked while old.reddit sometimes exposes the
+    # same public redirect/metadata surface.
+    if "/s/" in parts.path:
+        candidates.extend([
+            url.replace("www.reddit.com", "old.reddit.com"),
+            url.replace("reddit.com", "old.reddit.com"),
+        ])
+
+    seen = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            response = curl_requests.get(
+                candidate,
+                impersonate="chrome",
+                allow_redirects=True,
+                timeout=20,
+                headers={
+                    "Accept": "application/json,text/html;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Referer": "https://www.reddit.com/",
+                },
+            )
+            final_url = str(response.url)
+            if response.status_code >= 400:
+                continue
+            ctype = (response.headers.get("content-type") or "").lower()
+            if "json" not in ctype:
+                # A successful old.reddit redirect is still useful.
+                if "/s/" not in urlsplit(final_url).path and _platform_from_url(final_url) == "reddit":
+                    logger.info("Reddit fallback resolved canonical URL=%s", final_url)
+                    return _extract_with_fallback(final_url)
+                continue
+            payload = response.json()
+            listing = payload[0] if isinstance(payload, list) and payload else payload
+            children = (((listing or {}).get("data") or {}).get("children") or [])
+            if not children:
+                continue
+            post = (children[0] or {}).get("data") or {}
+            media_url = (
+                post.get("url_overridden_by_dest")
+                or post.get("url")
+            )
+            preview = (((post.get("preview") or {}).get("images") or [{}])[0].get("source") or {}).get("url")
+            if isinstance(media_url, str):
+                media_url = media_url.replace("&amp;", "&")
+            if isinstance(preview, str):
+                preview = preview.replace("&amp;", "&")
+            is_video = bool(post.get("is_video"))
+            reddit_video = (((post.get("secure_media") or {}).get("reddit_video") or {}).get("fallback_url"))
+            if reddit_video:
+                media_url = reddit_video
+                is_video = True
+            direct = media_url or preview
+            if not direct or not str(direct).startswith(("http://", "https://")):
+                continue
+            if is_video:
+                fmt = {
+                    "format_id": "reddit-json-video",
+                    "url": direct,
+                    "ext": "mp4",
+                    "vcodec": "unknown",
+                    "acodec": "unknown",
+                    "protocol": urlsplit(direct).scheme,
+                }
+                image_url = preview
+            else:
+                # For link/self posts, use preview only when destination isn't image media.
+                image_url = direct if _looks_like_image_url(str(direct)) else preview
+                if not image_url:
+                    continue
+                fmt = {
+                    "format_id": "reddit-json-image",
+                    "url": image_url,
+                    "ext": "jpg",
+                    "vcodec": "none",
+                    "acodec": "none",
+                    "protocol": urlsplit(image_url).scheme,
+                }
+            info = {
+                "id": str(post.get("id") or "reddit"),
+                "title": str(post.get("title") or "Reddit media"),
+                "uploader": post.get("author"),
+                "webpage_url": final_url,
+                "thumbnail": preview,
+                "image_url": image_url if not is_video else None,
+                "formats": [fmt],
+            }
+            logger.info("Reddit JSON fallback succeeded id=%s video=%s", info["id"], is_video)
+            return info, final_url, _base_opts()
+        except Exception as exc:
+            logger.warning("Reddit JSON fallback failed error_type=%s error=%r", type(exc).__name__, exc)
+    return None
+
+
 def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
     last_error: Exception | None = None
     if _platform_from_url(url) == "reddit":
@@ -887,6 +1012,11 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
                 )
 
     platform = _platform_from_url(url)
+
+    if platform == "reddit":
+        fallback = _reddit_json_fallback(url)
+        if fallback:
+            return fallback
 
     if platform == "instagram":
         for candidate in _url_variants(url):
