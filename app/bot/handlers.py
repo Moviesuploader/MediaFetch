@@ -168,18 +168,17 @@ async def _send_photo_album(
             with path.open("rb") as photo:
                 return [await message.reply_photo(photo=photo, caption=caption)]
         except BadRequest as exc:
-            # Facebook/CDN images may be AVIF/WebP or otherwise rejected by
-            # Telegram's photo processor even when stored with a .jpg suffix.
-            # Preserve delivery by sending the original bytes as a document.
             if "image_process_failed" not in str(exc).lower():
                 raise
+            # Do not silently downgrade photos to Telegram documents. A photo
+            # result must remain a photo in chat; surface the processing error
+            # so the downloader can be fixed/normalized instead.
             logger.warning(
-                "Telegram rejected photo processing; falling back to document path=%s size=%d",
+                "Telegram rejected photo processing path=%s size=%d",
                 path.name,
                 path.stat().st_size,
             )
-            with path.open("rb") as document:
-                return [await message.reply_document(document=document, caption=caption)]
+            raise
 
     # Telegram albums accept 2–10 media items. max_carousel_items is capped
     # at 10 in settings, so all photo carousel items can be sent together.
