@@ -989,10 +989,22 @@ def _reddit_json_fallback(url: str) -> tuple[dict, str, dict] | None:
 
 def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
     last_error: Exception | None = None
-    if _platform_from_url(url) == "reddit":
+    platform = _platform_from_url(url)
+    if platform == "reddit":
         url = _resolve_reddit_short_url(url)
 
-    for candidate in _url_variants(url):
+    # Photo share posts are common on Facebook and yt-dlp is video-oriented.
+    # Try the lightweight public preview once before the expensive 3-host x
+    # 2-profile extraction matrix. If it yields a real photo/video, return
+    # immediately; otherwise native extraction remains available.
+    if platform == "facebook":
+        fast = _meta_public_page_fallback(url)
+        if fast:
+            logger.info("Facebook fast public-page fallback succeeded url=%s", url)
+            return fast
+
+    extraction_candidates = [url] if platform == "facebook" else _url_variants(url)
+    for candidate in extraction_candidates:
         for profile in _extract_profiles(candidate):
             try:
                 opts = _apply_cookie_policy(dict(profile), candidate)
@@ -1033,8 +1045,6 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
                     _platform_from_url(candidate), profile_name, candidate, f"{type(exc).__name__}: {exc!r}",
                 )
 
-    platform = _platform_from_url(url)
-
     if platform == "reddit":
         fallback = _reddit_json_fallback(url)
         if fallback:
@@ -1048,21 +1058,19 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
                 return fallback
 
     if platform == "facebook":
-        for candidate in _url_variants(url):
-            fallback = _facebook_authenticated_photo_fallback(candidate)
-            if fallback:
-                return fallback
+        fallback = _facebook_authenticated_photo_fallback(url)
+        if fallback:
+            return fallback
 
     if platform in {"facebook", "threads"}:
-        for candidate in _url_variants(url):
-            fallback = _meta_public_page_fallback(candidate)
-            if fallback:
-                logger.info(
-                    "%s public-page fallback succeeded url=%s",
-                    platform.capitalize(),
-                    candidate,
-                )
-                return fallback
+        fallback = _meta_public_page_fallback(url)
+        if fallback:
+            logger.info(
+                "%s public-page fallback succeeded url=%s",
+                platform.capitalize(),
+                url,
+            )
+            return fallback
 
     logger.error("yt-dlp extraction failed after all fallbacks url=%s error=%s", url, last_error)
     raise last_error or DownloadError("Unable to extract media.")
