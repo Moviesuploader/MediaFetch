@@ -418,7 +418,16 @@ def _facebook_curl_photo_fallback(url: str) -> tuple[dict, str, dict] | None:
             or parser.values.get("og:video")
         )
         image_url = parser.values.get("og:image")
-        if video_url or not image_url:
+        if video_url:
+            logger.info("Facebook browser fallback found video metadata; leaving video handling to extractor")
+            return None
+        if not image_url:
+            logger.warning(
+                "Facebook browser fallback page has no og:image status=%s final_host=%s body_bytes=%d",
+                response.status_code,
+                urlsplit(final_url).netloc,
+                len(response.content),
+            )
             return None
 
         image_url = urljoin(final_url, image_url)
@@ -1127,10 +1136,12 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
         fallback = _facebook_curl_photo_fallback(url)
         if fallback:
             return fallback
+        errors.append(("browser-photo", DownloadError("Browser session returned no downloadable photo metadata.")))
 
         fallback = _facebook_authenticated_photo_fallback(url)
         if fallback:
             return fallback
+        errors.append(("urllib-photo", DownloadError("urllib Facebook request returned no downloadable photo metadata.")))
 
         # Emit one compact root-cause line instead of six near-identical
         # www/m/mbasic + native/generic failures.
