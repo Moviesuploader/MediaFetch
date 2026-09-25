@@ -304,7 +304,6 @@ def _extract_profiles(url: str) -> list[dict]:
         # curl-cffi is installed via yt-dlp[default,curl-cffi].
         for profile in profiles:
             profile["ignore_no_formats_error"] = True
-            profile["impersonate"] = "chrome"
             headers = dict(profile.get("http_headers") or {})
             headers.update({
                 "Accept": (
