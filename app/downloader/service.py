@@ -446,7 +446,25 @@ def _facebook_curl_photo_fallback(url: str) -> tuple[dict, str, dict] | None:
                         image_candidates.append(candidate)
             if image_candidates:
                 # Validate candidates instead of guessing by URL length.
-                valid_images: list[tuple[int, str]] = []
+                valid_images: list[tuple[int, int, int, str]] = []
+                # Prefer candidates structurally tied to the post media. Meta
+                # pages also contain avatars, reaction icons and UI sprites.
+                # Dimensions encoded in CDN query params are a much stronger
+                # signal than byte size alone.
+                def _candidate_dims(candidate: str) -> tuple[int, int]:
+                    import re
+                    decoded_candidate = unescape(candidate)
+                    patterns = (
+                        r"(?:[?&_]|\\u0026)width(?:=|%3D)(\\d+).*?(?:[?&_]|\\u0026)height(?:=|%3D)(\\d+)",
+                        r"(?:[?&_]|\\u0026)w(?:=|%3D)(\\d+).*?(?:[?&_]|\\u0026)h(?:=|%3D)(\\d+)",
+                        r"_(\\d+)x(\\d+)",
+                    )
+                    for pattern in patterns:
+                        match = re.search(pattern, decoded_candidate, re.IGNORECASE)
+                        if match:
+                            return int(match.group(1)), int(match.group(2))
+                    return (0, 0)
+
                 for candidate in image_candidates[:80]:
                     try:
                         probe = curl_requests.get(
@@ -469,7 +487,15 @@ def _facebook_curl_photo_fallback(url: str) -> tuple[dict, str, dict] | None:
                             or (blob.startswith(b"RIFF") and len(blob) >= 12 and blob[8:12] == b"WEBP")
                         )
                         if probe.status_code < 400 and ctype.startswith("image/") and magic:
-                            valid_images.append((len(blob), candidate))
+                            width, height = _candidate_dims(candidate)
+                            area = width * height
+                            # Strongly demote Facebook static/UI assets. The
+                            # actual uploaded post image is normally served by
+                            # scontent/fbcdn, while static.xx.fbcdn.net carries
+                            # interface icons and sprites.
+                            host = urlsplit(candidate).netloc.lower()
+                            post_cdn = int("scontent" in host or ("fbcdn.net" in host and not host.startswith("static.")))
+                            valid_images.append((post_cdn, area, len(blob), candidate))
                     except Exception:
                         continue
                 if not valid_images:
@@ -478,11 +504,16 @@ def _facebook_curl_photo_fallback(url: str) -> tuple[dict, str, dict] | None:
                         len(image_candidates),
                     )
                     return None
-                _, image_url = max(valid_images, key=lambda item: item[0])
+                post_candidates = [item for item in valid_images if item[0] == 1]
+                ranked = post_candidates or valid_images
+                _, area, byte_size, image_url = max(ranked, key=lambda item: (item[1], item[2]))
                 logger.info(
-                    "Facebook embedded CDN photo validated candidates=%d valid=%d host=%s",
+                    "Facebook post photo selected candidates=%d valid=%d post_cdn=%d area=%d bytes=%d host=%s",
                     len(image_candidates),
                     len(valid_images),
+                    len(post_candidates),
+                    area,
+                    byte_size,
                     urlsplit(image_url).netloc,
                 )
             else:
