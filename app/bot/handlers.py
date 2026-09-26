@@ -152,7 +152,20 @@ def _normalize_telegram_photo(path: Path) -> Path:
             image = background
         elif image.mode != "RGB":
             image = image.convert("RGB")
-        image.save(normalized, format="JPEG", quality=95, optimize=True)
+
+        # Telegram photos must fit its image-dimension constraints. Facebook
+        # can expose very tall/wide assets; preserve aspect ratio and shrink
+        # them before sendPhoto.
+        width, height = image.size
+        max_side = 10000
+        max_sum = 10000
+        scale = min(1.0, max_side / max(width, height), max_sum / (width + height))
+        if scale < 1.0:
+            image = image.resize(
+                (max(1, int(width * scale)), max(1, int(height * scale))),
+                Image.Resampling.LANCZOS,
+            )
+        image.save(normalized, format="JPEG", quality=92, optimize=True)
     logger.info("Normalized Telegram photo source=%s output=%s size=%d", path.name, normalized.name, normalized.stat().st_size)
     return normalized
 
@@ -187,7 +200,8 @@ async def _send_photo_album(
             with path.open("rb") as photo:
                 return [await message.reply_photo(photo=photo, caption=caption)]
         except BadRequest as exc:
-            if "image_process_failed" not in str(exc).lower():
+            telegram_error = str(exc).lower()
+            if not any(code in telegram_error for code in ("image_process_failed", "photo_invalid_dimensions")):
                 raise
             logger.warning("Telegram rejected original photo; normalizing path=%s size=%d", path.name, path.stat().st_size)
             normalized = await asyncio.to_thread(_normalize_telegram_photo, path)
