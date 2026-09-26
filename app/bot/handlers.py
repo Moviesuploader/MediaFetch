@@ -8,7 +8,7 @@ import secrets
 from pathlib import Path
 
 from telegram.error import BadRequest
-from telegram import InputMediaPhoto, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InputFile, InputMediaPhoto, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
@@ -128,11 +128,37 @@ async def _send_media_message(message, path: Path | None = None, file_id: str | 
 
     with path.open("rb") as media:
         if kind == "video":
-            return await message.reply_video(
-                video=media,
-                caption=caption,
-                supports_streaming=True,
-            )
+            thumbnail_file = None
+            thumbnail_handle = None
+            try:
+                # Telegram does not always generate a poster frame for videos
+                # uploaded by bots. Extract one locally so Facebook,
+                # Instagram, YouTube, Reddit, etc. have a visible preview.
+                thumb_path = path.with_name(f"{path.stem}-thumb.jpg")
+                process = await asyncio.create_subprocess_exec(
+                    "ffmpeg", "-y", "-ss", "00:00:01", "-i", str(path),
+                    "-frames:v", "1", "-vf", "scale=640:-2",
+                    "-q:v", "3", str(thumb_path),
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await asyncio.wait_for(process.wait(), timeout=15)
+                if process.returncode == 0 and thumb_path.is_file() and thumb_path.stat().st_size:
+                    thumbnail_handle = thumb_path.open("rb")
+                    thumbnail_file = InputFile(thumbnail_handle, filename="thumbnail.jpg")
+                return await message.reply_video(
+                    video=media,
+                    caption=caption,
+                    supports_streaming=True,
+                    thumbnail=thumbnail_file,
+                )
+            finally:
+                if thumbnail_handle:
+                    thumbnail_handle.close()
+                try:
+                    path.with_name(f"{path.stem}-thumb.jpg").unlink(missing_ok=True)
+                except OSError:
+                    pass
         if kind == "photo" and path.stat().st_size <= 10 * 1024 * 1024:
             return await message.reply_photo(photo=media, caption=caption)
         return await message.reply_document(document=media, caption=caption)
