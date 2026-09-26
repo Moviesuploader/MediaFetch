@@ -505,8 +505,22 @@ def _facebook_curl_photo_fallback(url: str) -> tuple[dict, str, dict] | None:
                     )
                     return None
                 post_candidates = [item for item in valid_images if item[0] == 1]
-                ranked = post_candidates or valid_images
-                _, area, byte_size, image_url = max(ranked, key=lambda item: (item[1], item[2]))
+                # Never fall back to static.xx.fbcdn.net/UI assets. Facebook
+                # pages contain icons, sprites and profile chrome alongside the
+                # actual post media; sending those is worse than a clean
+                # extraction failure.
+                if not post_candidates:
+                    logger.warning(
+                        "Facebook post photo not found among CDN candidates candidates=%d valid=%d; refusing static/UI asset fallback",
+                        len(image_candidates),
+                        len(valid_images),
+                    )
+                    return None
+
+                _, area, byte_size, image_url = max(
+                    post_candidates,
+                    key=lambda item: (item[1], item[2]),
+                )
                 logger.info(
                     "Facebook post photo selected candidates=%d valid=%d post_cdn=%d area=%d bytes=%d host=%s",
                     len(image_candidates),
