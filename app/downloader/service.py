@@ -454,12 +454,17 @@ def _facebook_curl_photo_fallback(url: str) -> tuple[dict, str, dict] | None:
                     if pos < 0:
                         continue
                     context = decoded[max(0, pos - 700):pos + len(candidate) + 300].lower()
-                    if any(marker in context for marker in (
-                        '"photo_image"', '"image"', '"uri"', '"viewer_image"',
-                        '"full_image"', '"preview_image"', '"media"',
+                    host = urlsplit(candidate).netloc.lower()
+                    is_post_cdn = "scontent" in host or ("fbcdn.net" in host and not host.startswith("static."))
+                    # Only call a candidate contextual when it is on a real
+                    # media CDN and sits next to attachment/photo fields.
+                    if is_post_cdn and any(marker in context for marker in (
+                        '"photo_image"', '"viewer_image"', '"full_image"',
+                        '"preview_image"', '"image":{"uri"', '"image": {"uri"',
+                        '"media":{"image"', '"media": {"image"',
                     )) and not any(marker in context for marker in (
                         '"profile_picture"', '"profilepic"', '"icon_image"',
-                        '"emoji"', '"sprite"',
+                        '"emoji"', '"sprite"', '"avatar"',
                     )):
                         contextual_candidates.append(candidate)
                 if contextual_candidates:
@@ -1240,7 +1245,16 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
     """
     platform = _platform_from_url(url)
     if platform == "reddit":
+        original_reddit_url = url
         url = _resolve_reddit_short_url(url)
+        # Reddit commonly blocks the HTML surface on datacenter IPs. Try its
+        # public JSON metadata surface before yt-dlp so image/video posts can
+        # resolve without two guaranteed 403 attempts.
+        fallback = _reddit_json_fallback(url)
+        if not fallback and url != original_reddit_url:
+            fallback = _reddit_json_fallback(original_reddit_url)
+        if fallback:
+            return fallback
 
     errors: list[tuple[str, Exception]] = []
 
