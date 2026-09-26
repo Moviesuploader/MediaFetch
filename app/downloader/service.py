@@ -680,7 +680,17 @@ def _meta_public_page_fallback(url: str) -> tuple[dict, str, dict] | None:
         )
         image_url = parser.values.get("og:image")
 
-        # Do not turn a video thumbnail into a fake "photo" result.
+        # Do not turn a Facebook Reel/video share thumbnail into a fake
+        # photo. If OpenGraph exposes no playable video URL, let yt-dlp and the
+        # authenticated browser path handle it instead.
+        path_lower = urlsplit(url).path.lower()
+        facebook_video_share = platform == "facebook" and (
+            "/share/r/" in path_lower or "/reel/" in path_lower or "/videos/" in path_lower
+        )
+        if facebook_video_share and not video_url:
+            logger.info("Facebook public preview has thumbnail only for video share; skipping photo fallback")
+            return None
+
         if not video_url and not image_url:
             return None
 
