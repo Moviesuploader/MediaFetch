@@ -523,6 +523,17 @@ def _facebook_curl_photo_fallback(url: str) -> tuple[dict, str, dict] | None:
                         )
                         if probe.status_code < 400 and ctype.startswith("image/") and magic:
                             width, height = _candidate_dims(candidate)
+                            # CDN URLs often omit dimensions. Read the actual
+                            # image header so ranking uses real pixels instead
+                            # of guessing from URL/query parameters.
+                            if not width or not height:
+                                try:
+                                    from PIL import Image
+                                    from io import BytesIO
+                                    with Image.open(BytesIO(blob)) as im:
+                                        width, height = im.size
+                                except Exception:
+                                    width, height = (0, 0)
                             area = width * height
                             # Strongly demote Facebook static/UI assets. The
                             # actual uploaded post image is normally served by
@@ -543,7 +554,17 @@ def _facebook_curl_photo_fallback(url: str) -> tuple[dict, str, dict] | None:
                         len(image_candidates),
                     )
                     return None
-                post_candidates = [item for item in valid_images if item[0] == 1]
+                post_candidates = [
+                    item for item in valid_images
+                    if item[0] == 1 and item[1] >= 160000
+                ]
+                # If metadata context was too strict, keep real large scontent
+                # images eligible; avatars/icons are filtered by pixel area.
+                if not post_candidates:
+                    post_candidates = [
+                        item for item in valid_images
+                        if item[0] == 1 and item[2] >= 100000
+                    ]
                 # Never fall back to static.xx.fbcdn.net/UI assets. Facebook
                 # pages contain icons, sprites and profile chrome alongside the
                 # actual post media; sending those is worse than a clean
