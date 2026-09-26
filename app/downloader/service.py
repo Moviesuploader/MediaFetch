@@ -445,6 +445,48 @@ def _facebook_curl_photo_fallback(url: str) -> tuple[dict, str, dict] | None:
                     if candidate not in image_candidates:
                         image_candidates.append(candidate)
             if image_candidates:
+                # Prefer CDN URLs structurally attached to this exact Facebook
+                # post/story object. A Comet page contains many unrelated
+                # images (avatars, recommendations, icons), so global size
+                # ranking can return a perfectly valid but wrong photo.
+                post_tokens = set(re.findall(r'(?<!\\d)\\d{8,25}(?!\\d)', final_url))
+                post_tokens.update(re.findall(
+                    r'(?i)(?:story_fbid|fbid|post_id)[^0-9]{0,40}(\\d{8,25})',
+                    decoded,
+                ))
+                structured_candidates: list[str] = []
+                for candidate in image_candidates:
+                    positions = [m.start() for m in re.finditer(re.escape(candidate), decoded)]
+                    for pos in positions[:4]:
+                        context = decoded[max(0, pos - 2200):pos + len(candidate) + 900].lower()
+                        positive = any(marker in context for marker in (
+                            '"photo_image"', '"viewer_image"', '"full_image"',
+                            '"preview_image"', '"image":{"uri"', '"image": {"uri"',
+                            '"media":{"image"', '"media": {"image"',
+                            '"__typename":"photo"', '"__typename": "photo"',
+                            '"attachments"', '"subattachments"',
+                        ))
+                        negative = any(marker in context for marker in (
+                            '"profile_picture"', '"profilepic"', '"icon_image"',
+                            '"emoji"', '"sprite"', '"avatar"',
+                        ))
+                        token_match = any(token in context for token in post_tokens)
+                        host = urlsplit(candidate).netloc.lower()
+                        real_media_cdn = "scontent" in host or (
+                            "fbcdn.net" in host and not host.startswith("static.")
+                        )
+                        if real_media_cdn and positive and not negative and (token_match or '"__typename":"photo"' in context):
+                            structured_candidates.append(candidate)
+                            break
+                structured_candidates = list(dict.fromkeys(structured_candidates))
+                if structured_candidates:
+                    image_candidates = structured_candidates
+                    logger.info(
+                        "Facebook structured post-photo candidates=%d post_tokens=%d",
+                        len(structured_candidates),
+                        len(post_tokens),
+                    )
+
                 # Facebook Comet/Relay repeats the actual attachment URL close
                 # to media fields (image/uri/photo_image). Rank that structural
                 # context before probing generic CDN assets.
@@ -467,7 +509,7 @@ def _facebook_curl_photo_fallback(url: str) -> tuple[dict, str, dict] | None:
                         '"emoji"', '"sprite"', '"avatar"',
                     )):
                         contextual_candidates.append(candidate)
-                if contextual_candidates:
+                if contextual_candidates and not structured_candidates:
                     image_candidates = contextual_candidates + [
                         item for item in image_candidates if item not in contextual_candidates
                     ]
@@ -582,7 +624,7 @@ def _facebook_curl_photo_fallback(url: str) -> tuple[dict, str, dict] | None:
                     key=lambda item: (item[1], item[2]),
                 )
                 logger.info(
-                    "Facebook post photo selected candidates=%d valid=%d post_cdn=%d area=%d bytes=%d host=%s",
+                    "Facebook post photo selected candidates=%d valid=%d post_cdn=%d rank_area=%d bytes=%d host=%s",
                     len(image_candidates),
                     len(valid_images),
                     len(post_candidates),
