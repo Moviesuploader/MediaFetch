@@ -139,7 +139,7 @@ async def _send_media_message(message, path: Path | None = None, file_id: str | 
 
 
 def _normalize_telegram_photo(path: Path) -> Path:
-    """Decode image bytes and rewrite them as a standard RGB JPEG Telegram accepts."""
+    """Rewrite an image to Telegram-safe RGB JPEG dimensions."""
     from PIL import Image, ImageOps
 
     normalized = path.with_name(f"{path.stem}-telegram.jpg")
@@ -153,22 +153,37 @@ def _normalize_telegram_photo(path: Path) -> Path:
         elif image.mode != "RGB":
             image = image.convert("RGB")
 
-        # Telegram photos must fit its image-dimension constraints. Facebook
-        # can expose very tall/wide assets; preserve aspect ratio and shrink
-        # them before sendPhoto.
         width, height = image.size
-        max_side = 10000
-        max_sum = 10000
-        scale = min(1.0, max_side / max(width, height), max_sum / (width + height))
-        if scale < 1.0:
+        # Telegram Bot API requires width + height <= 10000 and the aspect
+        # ratio must not exceed 20:1. Leave margin below both limits.
+        max_sum = 9500
+        max_ratio = 19.5
+        ratio = max(width, height) / max(1, min(width, height))
+        if ratio > max_ratio:
+            if width >= height:
+                target_height = max(1, int(width / max_ratio))
+                canvas = Image.new("RGB", (width, target_height), "white")
+                canvas.paste(image, (0, (target_height - height) // 2))
+            else:
+                target_width = max(1, int(height / max_ratio))
+                canvas = Image.new("RGB", (target_width, height), "white")
+                canvas.paste(image, ((target_width - width) // 2, 0))
+            image = canvas
+            width, height = image.size
+
+        if width + height > max_sum:
+            scale = max_sum / (width + height)
             image = image.resize(
                 (max(1, int(width * scale)), max(1, int(height * scale))),
                 Image.Resampling.LANCZOS,
             )
-        image.save(normalized, format="JPEG", quality=92, optimize=True)
-    logger.info("Normalized Telegram photo source=%s output=%s size=%d", path.name, normalized.name, normalized.stat().st_size)
-    return normalized
 
+        image.save(normalized, format="JPEG", quality=92, optimize=True)
+    logger.info(
+        "Normalized Telegram photo source=%s output=%s dimensions=%sx%s size=%d",
+        path.name, normalized.name, image.size[0], image.size[1], normalized.stat().st_size,
+    )
+    return normalized
 
 async def _send_photo_album(
     message,
