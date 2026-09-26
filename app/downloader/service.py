@@ -445,6 +445,33 @@ def _facebook_curl_photo_fallback(url: str) -> tuple[dict, str, dict] | None:
                     if candidate not in image_candidates:
                         image_candidates.append(candidate)
             if image_candidates:
+                # Facebook Comet/Relay repeats the actual attachment URL close
+                # to media fields (image/uri/photo_image). Rank that structural
+                # context before probing generic CDN assets.
+                contextual_candidates: list[str] = []
+                for candidate in image_candidates:
+                    pos = decoded.find(candidate)
+                    if pos < 0:
+                        continue
+                    context = decoded[max(0, pos - 700):pos + len(candidate) + 300].lower()
+                    if any(marker in context for marker in (
+                        '"photo_image"', '"image"', '"uri"', '"viewer_image"',
+                        '"full_image"', '"preview_image"', '"media"',
+                    )) and not any(marker in context for marker in (
+                        '"profile_picture"', '"profilepic"', '"icon_image"',
+                        '"emoji"', '"sprite"',
+                    )):
+                        contextual_candidates.append(candidate)
+                if contextual_candidates:
+                    image_candidates = contextual_candidates + [
+                        item for item in image_candidates if item not in contextual_candidates
+                    ]
+                    logger.info(
+                        "Facebook post-media contextual candidates=%d total=%d",
+                        len(contextual_candidates),
+                        len(image_candidates),
+                    )
+
                 # Validate candidates instead of guessing by URL length.
                 valid_images: list[tuple[int, int, int, str]] = []
                 # Prefer candidates structurally tied to the post media. Meta
@@ -465,7 +492,10 @@ def _facebook_curl_photo_fallback(url: str) -> tuple[dict, str, dict] | None:
                             return int(match.group(1)), int(match.group(2))
                     return (0, 0)
 
-                for candidate in image_candidates[:80]:
+                # Contextual post-media candidates are first; probe more than
+                # the old 80-item cap because Comet pages can contain many UI
+                # assets before the actual attachment.
+                for candidate in image_candidates[:200]:
                     try:
                         probe = curl_requests.get(
                             candidate,
@@ -495,7 +525,11 @@ def _facebook_curl_photo_fallback(url: str) -> tuple[dict, str, dict] | None:
                             # interface icons and sprites.
                             host = urlsplit(candidate).netloc.lower()
                             post_cdn = int("scontent" in host or ("fbcdn.net" in host and not host.startswith("static.")))
-                            valid_images.append((post_cdn, area, len(blob), candidate))
+                            contextual = int(candidate in contextual_candidates)
+                            # Encode contextual attachment evidence into the
+                            # rank while preserving the existing tuple shape.
+                            rank_area = area + (10**12 if contextual and post_cdn else 0)
+                            valid_images.append((post_cdn, rank_area, len(blob), candidate))
                     except Exception:
                         continue
                 if not valid_images:
