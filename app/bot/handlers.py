@@ -34,9 +34,8 @@ SUPPORTED_TEXT = (
 
 
 def _cache_key(url: str, mode: str) -> str:
-    # v2 invalidates older document-only cache entries so native video/photo
-    # Telegram media types are regenerated after the media-send fix.
-    return hashlib.sha256(f"v2|{url}|{mode}".encode("utf-8")).hexdigest()
+    # v3 also invalidates carousel entries created while child images could overwrite one another.
+    return hashlib.sha256(f"v3|{url}|{mode}".encode("utf-8")).hexdigest()
 
 
 def _is_admin(user_id: int) -> bool:
