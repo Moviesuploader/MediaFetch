@@ -832,7 +832,7 @@ def _meta_public_page_fallback(url: str) -> tuple[dict, str, dict] | None:
         # authenticated browser path handle it instead.
         path_lower = urlsplit(url).path.lower()
         facebook_video_share = platform == "facebook" and (
-            "/share/r/" in path_lower or "/reel/" in path_lower or "/videos/" in path_lower
+            "/share/r/" in path_lower or "/share/v/" in path_lower or "/reel/" in path_lower or "/videos/" in path_lower
         )
         if facebook_video_share and not video_url:
             logger.info("Facebook public preview has thumbnail only for video share; skipping photo fallback")
@@ -1188,6 +1188,33 @@ def _resolve_reddit_short_url(url: str) -> str:
     return url
 
 
+def _youtube_post_fallback(url: str) -> tuple[dict, str, dict] | None:
+    """Recover a public YouTube Community post image from page metadata."""
+    if "/post/" not in urlsplit(url).path.lower():
+        return None
+    try:
+        ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/146.0 Safari/537.36"
+        req = urllib.request.Request(url, headers={"User-Agent": ua, "Accept": "text/html,application/xhtml+xml"})
+        with urllib.request.urlopen(req, timeout=20) as response:
+            html = response.read(6 * 1024 * 1024).decode("utf-8", "replace")
+        parser = _OpenGraphParser()
+        parser.feed(html)
+        image_url = parser.values.get("og:image")
+        if not image_url:
+            return None
+        image_url = urljoin(url, image_url)
+        post_id = urlsplit(url).path.rstrip("/").split("/")[-1]
+        fmt = {"format_id": "youtube-community-image", "url": image_url, "ext": "jpg",
+               "vcodec": "none", "acodec": "none", "protocol": urlsplit(image_url).scheme,
+               "http_headers": {"User-Agent": ua, "Referer": url}}
+        return {"id": post_id, "title": parser.values.get("og:title") or "YouTube Community post",
+                "webpage_url": url, "thumbnail": image_url, "image_url": image_url,
+                "formats": [fmt]}, url, _base_opts()
+    except Exception as exc:
+        logger.warning("YouTube Community fallback failed error_type=%s error=%s", type(exc).__name__, exc)
+        return None
+
+
 def _reddit_json_fallback(url: str) -> tuple[dict, str, dict] | None:
     """Fetch public Reddit post metadata from JSON surfaces.
 
@@ -1317,6 +1344,12 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
                 logger.info("Threads public-page fallback succeeded url=%s", candidate)
                 return fallback
 
+    if platform == "youtube" and "/post/" in urlsplit(url).path.lower():
+        fallback = _youtube_post_fallback(url)
+        if fallback:
+            logger.info("YouTube Community photo fallback succeeded url=%s", url)
+            return fallback
+
     if platform == "reddit":
         original_reddit_url = url
         url = _resolve_reddit_short_url(url)
@@ -1434,6 +1467,15 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
             return fallback
 
     if platform == "instagram":
+        # Reels must prefer playable OpenGraph video over thumbnail-only
+        # metadata. This also repairs stale inspection callbacks that were
+        # classified as photo when yt-dlp temporarily returned no formats.
+        if "/reel/" in urlsplit(url).path.lower():
+            for candidate in _url_variants(url):
+                fallback = _instagram_web_fallback(candidate)
+                if fallback and _has_video_format(fallback[0]):
+                    logger.info("Instagram Reel video fallback succeeded url=%s", candidate)
+                    return fallback
         for candidate in _url_variants(url):
             fallback = _instagram_web_fallback(candidate)
             if fallback:
@@ -1837,6 +1879,14 @@ def _download_sync(
             opts["progress_hooks"] = [progress_hook]
         except Exception as exc:
             raise DownloadError(str(exc)) from exc
+
+        # "photo" is a UI choice only for genuinely image-only posts.
+        # Never turn a Reel/video into its poster merely because a stale
+        # callback requested photo mode.
+        if mode == "photo" and _has_video_format(info):
+            mode = "best"
+            selector = "bv+ba/b[vcodec!=none][ext=mp4]/b[vcodec!=none]" if platform == "facebook" else "bv*+ba/b"
+            opts["format"] = selector
 
         if mode == "photo" or (mode != "audio" and not _has_video_format(info)):
             # If extraction/fallback already produced an image URL, use it
