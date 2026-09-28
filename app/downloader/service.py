@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import json
 import asyncio
 import base64
 import binascii
@@ -1190,64 +1191,158 @@ def _resolve_reddit_short_url(url: str) -> str:
 
 
 def _threads_crawler_fallback(url: str) -> tuple[dict, str, dict] | None:
-    """Resolve public Threads photos, carousels and videos from rendered page data."""
+    """Resolve the exact public Threads post from Meta's crawler JSON.
+
+    This deliberately binds media to the target post shortcode instead of
+    scraping arbitrary CDN URLs from a page that also contains replies and
+    recommendations.
+    """
     if curl_requests is None:
         return None
-    uas = [
-        "Googlebot/2.1 (+http://www.google.com/bot.html)",
-        "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/146.0 Safari/537.36",
-    ]
-    for ua in uas:
-        try:
-            response = curl_requests.get(
-                url, impersonate="chrome", allow_redirects=True, timeout=20,
-                headers={"User-Agent": ua, "Accept": "text/html,application/xhtml+xml",
-                         "Accept-Language": "en-US,en;q=0.9"},
+
+    ua = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
+
+    def collect_posts(obj, out):
+        if isinstance(obj, dict):
+            if obj.get("code") and any(k in obj for k in (
+                "video_versions", "video_dash_manifest", "image_versions2", "carousel_media"
+            )):
+                out.append(obj)
+            for value in obj.values():
+                collect_posts(value, out)
+        elif isinstance(obj, list):
+            for value in obj:
+                collect_posts(value, out)
+
+    def image_url(media):
+        candidates = ((media.get("image_versions2") or {}).get("candidates") or [])
+        candidates = [c for c in candidates if isinstance(c, dict) and c.get("url")]
+        if not candidates:
+            return None
+        return max(
+            candidates,
+            key=lambda c: (int(c.get("width") or 0) * int(c.get("height") or 0), int(c.get("width") or 0)),
+        ).get("url")
+
+    def media_entry(media, item_id, title, final_url):
+        videos = []
+        for version in media.get("video_versions") or []:
+            if isinstance(version, dict) and version.get("url"):
+                videos.append(version)
+        if videos:
+            best = max(
+                videos,
+                key=lambda v: (int(v.get("width") or 0) * int(v.get("height") or 0), int(v.get("type") or 0)),
             )
-            if response.status_code >= 400:
-                logger.warning("Threads page fallback status=%s url=%s", response.status_code, url)
+            video = best["url"]
+            fmt = {
+                "format_id": "threads-progressive",
+                "url": video,
+                "ext": "mp4",
+                "vcodec": "unknown",
+                "acodec": "unknown",
+                "width": best.get("width") or media.get("original_width"),
+                "height": best.get("height") or media.get("original_height"),
+                "protocol": urlsplit(video).scheme,
+                "http_headers": {"Referer": "https://www.threads.com/", "User-Agent": ua},
+            }
+            return {
+                "id": item_id, "title": title, "webpage_url": final_url,
+                "thumbnail": image_url(media), "formats": [fmt],
+            }
+
+        image = image_url(media)
+        if image:
+            fmt = {
+                "format_id": "threads-image",
+                "url": image,
+                "ext": "jpg",
+                "vcodec": "none",
+                "acodec": "none",
+                "protocol": urlsplit(image).scheme,
+                "http_headers": {"Referer": "https://www.threads.com/", "User-Agent": ua},
+            }
+            return {
+                "id": item_id, "title": title, "webpage_url": final_url,
+                "thumbnail": image, "image_url": image, "formats": [fmt],
+            }
+        return None
+
+    try:
+        response = curl_requests.get(
+            url, allow_redirects=True, timeout=20,
+            headers={"User-Agent": ua, "Accept": "text/html,application/xhtml+xml",
+                     "Accept-Language": "en-US,en;q=0.9"},
+        )
+        if response.status_code >= 400:
+            logger.warning("Threads crawler status=%s url=%s", response.status_code, url)
+            return None
+
+        final_url = str(response.url)
+        html = response.text
+        parser = _OpenGraphParser()
+        parser.feed(html)
+
+        # Share links reveal the real shortcode in og:url/canonical URL.
+        target_code = None
+        for source in (parser.values.get("og:url"), final_url, url):
+            match = re.search(r"/post/([\\w-]+)", source or "")
+            if match:
+                target_code = match.group(1)
+                break
+
+        posts = []
+        for block in re.findall(
+            r'<script\\s+type=["\\\']application/json["\\\'][^>]*>(.*?)</script>',
+            html, flags=re.I | re.S,
+        ):
+            try:
+                collect_posts(json.loads(block), posts)
+            except (json.JSONDecodeError, TypeError):
                 continue
-            final_url = str(response.url)
-            html = response.text
-            parser = _OpenGraphParser()
-            parser.feed(html)
-            video_urls = []
-            for v in (parser.values.get("og:video:secure_url"), parser.values.get("og:video:url"), parser.values.get("og:video")):
-                if v and v.startswith(("http://","https://")) and v not in video_urls:
-                    video_urls.append(v)
-            # Threads embeds media CDN URLs in Relay JSON. Decode common JSON escapes.
-            decoded = html.replace(r"\\u0026", "&").replace(r"\\/", "/").replace("&amp;", "&")
-            for v in re.findall(r'https?://[^"<> ]+\\.(?:mp4)(?:\\?[^"<> ]*)?', decoded, flags=re.I):
-                if ("cdninstagram.com" in v or "fbcdn.net" in v) and v not in video_urls:
-                    video_urls.append(v)
-            image_urls = []
-            og = parser.values.get("og:image")
-            if og:
-                image_urls.append(og)
-            for v in re.findall(r'https?://[^"<> ]+(?:cdninstagram\\.com|fbcdn\\.net)[^"<> ]+', decoded, flags=re.I):
-                low=v.lower()
-                if not low.endswith(".mp4") and v not in image_urls:
-                    image_urls.append(v)
-            if video_urls:
-                video=video_urls[0]
-                fmt={"format_id":"threads-page-video","url":video,"ext":"mp4","vcodec":"unknown","acodec":"unknown",
-                     "protocol":urlsplit(video).scheme,"http_headers":{"Referer":final_url,"User-Agent":ua}}
-                return {"id":final_url.rstrip("/").split("/")[-1],"title":parser.values.get("og:title") or "Threads video",
-                        "webpage_url":final_url,"thumbnail":og,"formats":[fmt]},final_url,_base_opts()
-            if image_urls:
-                entries=[]
-                for idx,img in enumerate(image_urls[:10],1):
-                    fmt={"format_id":f"threads-image-{idx}","url":img,"ext":"jpg","vcodec":"none","acodec":"none",
-                         "protocol":urlsplit(img).scheme,"http_headers":{"Referer":final_url,"User-Agent":ua}}
-                    entries.append({"id":f"threads-{idx}","title":parser.values.get("og:title") or "Threads photo",
-                                    "webpage_url":final_url,"image_url":img,"thumbnail":img,"formats":[fmt]})
-                logger.info("Threads page media recovered images=%d",len(entries))
-                return {"id":final_url.rstrip("/").split("/")[-1],"title":parser.values.get("og:title") or "Threads post",
-                        "webpage_url":final_url,"entries":entries,"formats":[]},final_url,_base_opts()
-        except Exception as exc:
-            logger.warning("Threads page fallback failed error_type=%s error=%s",type(exc).__name__,exc)
-    return None
+
+        if target_code:
+            post = next((p for p in posts if p.get("code") == target_code), None)
+        else:
+            post = None
+
+        if post is None:
+            logger.warning(
+                "Threads exact post missing target=%s posts=%d final_url=%s",
+                target_code, len(posts), final_url,
+            )
+            return None
+
+        caption = ((post.get("caption") or {}).get("text") or "").strip()
+        title = caption.split("\\n", 1)[0][:72] or f"Threads post {target_code}"
+        carousel = post.get("carousel_media")
+        media_items = carousel if isinstance(carousel, list) and carousel else [post]
+        entries = []
+        for idx, media in enumerate(media_items, 1):
+            if not isinstance(media, dict):
+                continue
+            entry = media_entry(media, f"{target_code}_{idx}", title, final_url)
+            if entry:
+                entries.append(entry)
+
+        if not entries:
+            logger.warning("Threads exact post has no recoverable media target=%s", target_code)
+            return None
+
+        logger.info(
+            "Threads exact post recovered target=%s media=%d carousel=%s",
+            target_code, len(entries), bool(isinstance(carousel, list) and carousel),
+        )
+        if len(entries) == 1:
+            return entries[0], final_url, _base_opts()
+        return {
+            "id": target_code, "title": title, "webpage_url": final_url,
+            "entries": entries, "formats": [],
+        }, final_url, _base_opts()
+    except Exception as exc:
+        logger.warning("Threads structured fallback failed error_type=%s error=%s", type(exc).__name__, exc)
+        return None
+
 
 def _youtube_post_fallback(url: str) -> tuple[dict, str, dict] | None:
     """Recover a public YouTube Community post image from page metadata."""
