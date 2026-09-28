@@ -1579,7 +1579,7 @@ def _threads_browser_video_fallback(url: str) -> tuple[dict, str, dict] | None:
             logger.warning("Threads browser resolver did not reach a post")
             return None
         post_code = match.group(1)
-        canonical_url = f"https://www.threads.com{urlsplit(resolved_url).path.rstrip('/')}"
+        canonical_url = resolved_url  # preserve signed xmt/slof query from share redirect
     except Exception as exc:
         logger.warning("Threads browser resolver failed error_type=%s error=%s", type(exc).__name__, exc)
         return None
@@ -1630,7 +1630,7 @@ def _threads_browser_video_fallback(url: str) -> tuple[dict, str, dict] | None:
                     pass
 
             page.on("response", on_response)
-            page.goto(canonical_url, wait_until="domcontentloaded", timeout=30000)
+            page.goto(canonical_url, wait_until="commit", timeout=15000)
             try:
                 page.wait_for_selector("video", timeout=12000)
             except Exception:
