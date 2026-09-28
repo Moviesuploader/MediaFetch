@@ -1429,7 +1429,9 @@ def _threads_graphql_fallback(url: str) -> tuple[dict, str, dict] | None:
         return None
     try:
         resolve = curl_requests.get(
-            url, allow_redirects=True, timeout=20,\n            **_threads_curl_proxy_kwargs(),\n            headers={"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"},
+            url, allow_redirects=True, timeout=20,
+            **_threads_curl_proxy_kwargs(),
+            headers={"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"},
         )
         final_url = str(resolve.url)
         match = re.search(r"/post/([A-Za-z0-9_-]+)", urlsplit(final_url).path)
@@ -1502,7 +1504,9 @@ def _threads_graphql_fallback(url: str) -> tuple[dict, str, dict] | None:
                 "doc_id": "25460088156920903",
             },
             headers=headers,
-            impersonate="chrome",\n            timeout=25,\n            **_threads_curl_proxy_kwargs(),
+            impersonate="chrome",
+            timeout=25,
+            **_threads_curl_proxy_kwargs(),
         )
         if response.status_code != 200:
             logger.warning("Threads GraphQL HTTP status=%s code=%s", response.status_code, code)
@@ -1857,7 +1861,9 @@ def _threads_authenticated_fallback(url: str) -> tuple[dict, str, dict] | None:
             resolved_url,
             impersonate="chrome",
             allow_redirects=True,
-            timeout=25,\n            **_threads_curl_proxy_kwargs(),\n            cookies=cookies,
+            timeout=25,
+            **_threads_curl_proxy_kwargs(),
+            cookies=cookies,
             headers={
                 "User-Agent": ua,
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
