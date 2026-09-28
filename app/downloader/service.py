@@ -558,8 +558,8 @@ def _facebook_curl_photo_fallback(url: str) -> tuple[dict, str, dict] | None:
                         blob = probe.content
                         ctype = (probe.headers.get("content-type") or "").lower()
                         magic = (
-                            blob.startswith(b"\\xff\\xd8\\xff")
-                            or blob.startswith(b"\\x89PNG\\r\\n\\x1a\\n")
+                            blob.startswith(bytes.fromhex("ffd8ff"))
+                            or blob.startswith(bytes.fromhex("89504e470d0a1a0a"))
                             or blob.startswith((b"GIF87a", b"GIF89a"))
                             or (blob.startswith(b"RIFF") and len(blob) >= 12 and blob[8:12] == b"WEBP")
                         )
@@ -1564,8 +1564,8 @@ def _download_image(url: str, target: Path, max_file_mb: int, headers: dict[str,
     # interstitial/error page with HTTP 200; saving that as .jpg later makes
     # Telegram and Pillow fail with Image_process_failed/UnidentifiedImageError.
     image_signatures = (
-        data.startswith(b"\\xff\\xd8\\xff"),
-        data.startswith(b"\\x89PNG\\r\\n\\x1a\\n"),
+        data.startswith(bytes.fromhex("ffd8ff")),
+        data.startswith(bytes.fromhex("89504e470d0a1a0a")),
         data.startswith((b"GIF87a", b"GIF89a")),
         data.startswith(b"RIFF") and data[8:12] == b"WEBP",
     )
@@ -1582,9 +1582,9 @@ def _download_image(url: str, target: Path, max_file_mb: int, headers: dict[str,
         raise DownloadError("The source returned a webpage instead of image bytes.")
 
     extension = mimetypes.guess_extension(content_type) or Path(url.split("?", 1)[0]).suffix
-    if data.startswith(b"\\xff\\xd8\\xff"):
+    if data.startswith(bytes.fromhex("ffd8ff")):
         extension = ".jpg"
-    elif data.startswith(b"\\x89PNG"):
+    elif data.startswith(bytes.fromhex("89504e47")):
         extension = ".png"
     elif data.startswith((b"GIF87a", b"GIF89a")):
         extension = ".gif"
