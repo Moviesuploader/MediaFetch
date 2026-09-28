@@ -1251,6 +1251,28 @@ def _threads_crawler_fallback(url: str) -> tuple[dict, str, dict] | None:
             return None
         post_code = match.group(1)
 
+        # The /share/ redirect response is not always the same document as the
+        # canonical public post. Refetch the clean /@user/post/CODE URL exactly
+        # as the proven data-sjs parser does; signed xmt/slof params can produce
+        # a shell where the post exists but its media lives in a different node.
+        canonical_path = urlsplit(final_url).path.rstrip("/")
+        canonical_url = f"https://www.threads.com{canonical_path}"
+        if canonical_url != final_url:
+            canonical_response = curl_requests.get(
+                canonical_url,
+                allow_redirects=True,
+                timeout=20,
+                headers={
+                    "User-Agent": ua,
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.5",
+                },
+            )
+            if canonical_response.status_code < 400:
+                response = canonical_response
+                final_url = canonical_url
+                logger.info("Threads canonical public page loaded code=%s", post_code)
+
         class _ThreadsJsonParser(HTMLParser):
             def __init__(self):
                 super().__init__()
@@ -1318,6 +1340,15 @@ def _threads_crawler_fallback(url: str) -> tuple[dict, str, dict] | None:
         description = caption.get("text", "") if isinstance(caption, dict) else ""
         title = (description.strip().split("\n", 1)[0][:72] if isinstance(description, str) else "") or f"Threads post {post_code}"
         source = media_source(post)
+        if not has_media(source):
+            # Some current Threads payloads place media below a wrapper carrying
+            # the shortcode. Prefer a media-bearing descendant before falling
+            # through to GraphQL/yt-dlp.
+            for child in walk(post):
+                if child is not post and has_media(child):
+                    source = child
+                    logger.info("Threads nested media node recovered code=%s", post_code)
+                    break
         items = source.get("carousel_media") or [source]
         entries = []
         for idx, item in enumerate(items, 1):
