@@ -2221,6 +2221,20 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
         if fallback:
             return fallback
 
+    if platform == "instagram":
+        # Instagram's native extractor can currently fail before returning
+        # metadata (empty JSON/login redirects).  Try the public post surface
+        # first on a clean canonical URL, without exported login cookies.
+        # Keep reels on yt-dlp first so normal quality selection is preserved.
+        path_lower = urlsplit(url).path.lower()
+        if "/p/" in path_lower:
+            clean_parts = urlsplit(url)
+            clean_url = clean_parts._replace(query="", fragment="").geturl()
+            fallback = _instagram_web_fallback(clean_url)
+            if fallback:
+                logger.info("Instagram clean public-page fallback succeeded url=%s", clean_url)
+                return fallback
+
     if platform == "youtube" and "/post/" in urlsplit(url).path.lower():
         fallback = _youtube_post_fallback(url)
         if fallback:
