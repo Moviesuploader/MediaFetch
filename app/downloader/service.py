@@ -290,10 +290,14 @@ def _platform_from_url(url: str) -> str:
 def _extract_profiles(url: str) -> list[dict]:
     platform = _platform_from_url(url)
     profiles = [_base_opts()]
+    if platform == "threads" and _threads_proxy():
+        profiles[0]["proxy"] = _threads_proxy()
 
     if platform in {"facebook", "instagram", "threads", "pinterest", "reddit", "x", "tiktok"}:
         generic = _base_opts()
         generic["allowed_extractors"] = ["generic"]
+        if platform == "threads" and _threads_proxy():
+            generic["proxy"] = _threads_proxy()
         profiles.append(generic)
 
     if platform == "reddit":
@@ -1407,14 +1411,25 @@ def _threads_crawler_fallback(url: str) -> tuple[dict, str, dict] | None:
         return None
 
 
+
+def _threads_proxy() -> str | None:
+    """Optional proxy used only for Threads; credentials are never logged."""
+    value = (settings.threads_proxy_url or "").strip()
+    return value or None
+
+
+def _threads_curl_proxy_kwargs() -> dict:
+    proxy = _threads_proxy()
+    return {"proxy": proxy} if proxy else {}
+
+
 def _threads_graphql_fallback(url: str) -> tuple[dict, str, dict] | None:
     """Resolve Threads media through Meta's own Barcelona post GraphQL query."""
     if curl_requests is None:
         return None
     try:
         resolve = curl_requests.get(
-            url, allow_redirects=True, timeout=20,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"},
+            url, allow_redirects=True, timeout=20,\n            **_threads_curl_proxy_kwargs(),\n            headers={"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"},
         )
         final_url = str(resolve.url)
         match = re.search(r"/post/([A-Za-z0-9_-]+)", urlsplit(final_url).path)
@@ -1487,8 +1502,7 @@ def _threads_graphql_fallback(url: str) -> tuple[dict, str, dict] | None:
                 "doc_id": "25460088156920903",
             },
             headers=headers,
-            impersonate="chrome",
-            timeout=25,
+            impersonate="chrome",\n            timeout=25,\n            **_threads_curl_proxy_kwargs(),
         )
         if response.status_code != 200:
             logger.warning("Threads GraphQL HTTP status=%s code=%s", response.status_code, code)
@@ -1594,8 +1608,7 @@ def _threads_browser_video_fallback(url: str) -> tuple[dict, str, dict] | None:
         resolved = curl_requests.get(
             url,
             allow_redirects=True,
-            timeout=20,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"},
+            timeout=20,\n            **_threads_curl_proxy_kwargs(),\n            headers={"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"},
         ) if curl_requests is not None else None
         resolved_url = str(resolved.url) if resolved is not None else url
         match = re.search(r"/post/([A-Za-z0-9_-]+)", urlsplit(resolved_url).path)
@@ -1821,8 +1834,7 @@ def _threads_authenticated_fallback(url: str) -> tuple[dict, str, dict] | None:
         resolve = curl_requests.get(
             url,
             allow_redirects=True,
-            timeout=20,
-            headers={
+            timeout=20,\n            **_threads_curl_proxy_kwargs(),\n            headers={
                 "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
                 "Accept": "text/html,application/xhtml+xml",
             },
@@ -1845,8 +1857,7 @@ def _threads_authenticated_fallback(url: str) -> tuple[dict, str, dict] | None:
             resolved_url,
             impersonate="chrome",
             allow_redirects=True,
-            timeout=25,
-            cookies=cookies,
+            timeout=25,\n            **_threads_curl_proxy_kwargs(),\n            cookies=cookies,
             headers={
                 "User-Agent": ua,
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
