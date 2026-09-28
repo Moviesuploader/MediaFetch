@@ -1390,27 +1390,18 @@ def _threads_graphql_fallback(url: str) -> tuple[dict, str, dict] | None:
             jar.load(ignore_discard=True, ignore_expires=True)
             cookies = {cookie.name: cookie.value for cookie in jar}
 
-        providers = (
-            "BarcelonaHasPermalinkIndentation", "BarcelonaIsLoggedIn",
-            "BarcelonaHasPostAuthorNotifControls", "BarcelonaShouldShowFediverseM1Features",
-            "BarcelonaHasPermalinkPodcastCard", "BarcelonaHasDearAlgoConsumption",
-            "BarcelonaHasEventBadge", "BarcelonaGenAIRepliesEnabled",
-            "BarcelonaIsSearchDiscoveryEnabled", "BarcelonaHasCommunities",
-            "BarcelonaHasGameScoreShare", "BarcelonaHasPublicViewCountCard",
-            "BarcelonaHasCommunityEntityCard", "BarcelonaHasScorecardCommunity",
-            "BarcelonaHasSportTeamAllegianceCard", "BarcelonaHasMusic",
-            "BarcelonaHasNewspaperLinkStyle", "BarcelonaHasMessaging",
-            "BarcelonaHasPodcastTextFragments", "BarcelonaShouldFulfillLightboxQuery",
-            "BarcelonaHasViewerReplied", "BarcelonaHasPrivateRepliesDeprecation",
-            "BarcelonaHasGhostPostEmojiActivation", "BarcelonaOptionalCookiesEnabled",
-            "BarcelonaHasDearAlgoWebProduction", "BarcelonaHasWebFavicons",
-            "BarcelonaIsCrawler", "BarcelonaHasCommunityTopContributors",
-            "BarcelonaCanSeeSponsoredContent", "BarcelonaShouldShowFediverseM075Features",
-            "BarcelonaIsInternalUser",
-        )
-        variables = {"postID": str(post_id)}
-        for name in providers:
-            variables[f"__relay_internal__pv__{name}relayprovider"] = False
+        variables = {
+            "check_for_unavailable_replies": True,
+            "first": 10,
+            "postID": str(post_id),
+            "__relay_internal__pv__BarcelonaIsLoggedInrelayprovider": True,
+            "__relay_internal__pv__BarcelonaIsThreadContextHeaderEnabledrelayprovider": False,
+            "__relay_internal__pv__BarcelonaIsThreadContextHeaderFollowButtonEnabledrelayprovider": False,
+            "__relay_internal__pv__BarcelonaUseCometVideoPlaybackEnginerelayprovider": False,
+            "__relay_internal__pv__BarcelonaOptionalCookiesEnabledrelayprovider": False,
+            "__relay_internal__pv__BarcelonaIsViewCountEnabledrelayprovider": False,
+            "__relay_internal__pv__BarcelonaShouldShowFediverseM075Featuresrelayprovider": False,
+        }
 
         headers = {
             "Accept": "*/*",
@@ -1419,6 +1410,7 @@ def _threads_graphql_fallback(url: str) -> tuple[dict, str, dict] | None:
             "Origin": "https://www.threads.com",
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
             "X-IG-App-ID": "238260118697367",
+            "X-Fb-Lsd": "hgmSkqDnLNFckqa7t1vJdn",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
         }
@@ -1427,11 +1419,11 @@ def _threads_graphql_fallback(url: str) -> tuple[dict, str, dict] | None:
             headers["X-CSRFToken"] = csrf
 
         response = curl_requests.post(
-            "https://www.threads.com/graphql/query",
+            "https://www.threads.com/api/graphql",
             data={
                 "variables": json.dumps(variables, separators=(",", ":")),
-                "doc_id": "27419285281047858",
-                "server_timestamps": "true",
+                "doc_id": "7448594591874178",
+                "lsd": "hgmSkqDnLNFckqa7t1vJdn",
             },
             cookies=cookies,
             headers=headers,
