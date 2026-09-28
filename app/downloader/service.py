@@ -1612,7 +1612,9 @@ def _threads_browser_video_fallback(url: str) -> tuple[dict, str, dict] | None:
         resolved = curl_requests.get(
             url,
             allow_redirects=True,
-            timeout=20,\n            **_threads_curl_proxy_kwargs(),\n            headers={"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"},
+            timeout=20,
+            **_threads_curl_proxy_kwargs(),
+            headers={"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"},
         ) if curl_requests is not None else None
         resolved_url = str(resolved.url) if resolved is not None else url
         match = re.search(r"/post/([A-Za-z0-9_-]+)", urlsplit(resolved_url).path)
@@ -1838,7 +1840,9 @@ def _threads_authenticated_fallback(url: str) -> tuple[dict, str, dict] | None:
         resolve = curl_requests.get(
             url,
             allow_redirects=True,
-            timeout=20,\n            **_threads_curl_proxy_kwargs(),\n            headers={
+            timeout=20,
+            **_threads_curl_proxy_kwargs(),
+            headers={
                 "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
                 "Accept": "text/html,application/xhtml+xml",
             },
