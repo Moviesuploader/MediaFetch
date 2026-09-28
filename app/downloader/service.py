@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import asyncio
 import base64
 import binascii
