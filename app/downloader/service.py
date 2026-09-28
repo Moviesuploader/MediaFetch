@@ -950,6 +950,140 @@ def _meta_public_page_fallback(url: str) -> tuple[dict, str, dict] | None:
         return None
 
 
+
+def _instagram_carousel_graphql_fallback(url: str) -> tuple[dict, str, dict] | None:
+    """Resolve every Instagram carousel item from shortcode GraphQL metadata.
+
+    OpenGraph exposes only the cover image, which caused the same photo to be
+    reused for every sidecar entry. Build one entry per carousel_media item.
+    """
+    if curl_requests is None:
+        return None
+    path_parts = [part for part in urlsplit(url).path.split("/") if part]
+    if len(path_parts) < 2 or path_parts[0].lower() != "p":
+        return None
+    shortcode = path_parts[1]
+    cookie_file = _materialize_instagram_cookie_file()
+    cookies = {}
+    if cookie_file and cookie_file.is_file():
+        try:
+            jar = http.cookiejar.MozillaCookieJar(str(cookie_file))
+            jar.load(ignore_discard=True, ignore_expires=True)
+            cookies = {cookie.name: cookie.value for cookie in jar}
+        except Exception:
+            pass
+    ua = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    )
+    try:
+        session = curl_requests.Session(impersonate="chrome")
+        home = session.get(
+            "https://www.instagram.com/",
+            cookies=cookies or None,
+            headers={"User-Agent": ua, "Accept": "text/html,*/*"},
+            timeout=20,
+        )
+        csrf = session.cookies.get("csrftoken") or cookies.get("csrftoken") or ""
+        headers = {
+            "User-Agent": ua,
+            "Accept": "*/*",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": "https://www.instagram.com",
+            "Referer": f"https://www.instagram.com/p/{shortcode}/",
+            "X-IG-App-ID": "936619743392459",
+        }
+        if csrf:
+            headers["X-CSRFToken"] = csrf
+        response = session.post(
+            "https://www.instagram.com/graphql/query",
+            data={
+                "variables": json.dumps({
+                    "shortcode": shortcode,
+                    "__relay_internal__pv__PolarisAIGMMediaWebLabelEnabledrelayprovider": False,
+                }, separators=(",", ":")),
+                "doc_id": "27128499623469141",
+                "server_timestamps": "true",
+            },
+            headers=headers,
+            timeout=25,
+        )
+        if response.status_code != 200:
+            logger.warning("Instagram carousel GraphQL HTTP status=%s shortcode=%s", response.status_code, shortcode)
+            return None
+        payload = response.json()
+        data = payload.get("data") or {}
+        media = data.get("xdt_shortcode_media")
+        if not isinstance(media, dict):
+            web = data.get("xdt_api__v1__media__shortcode__web_info") or {}
+            items = web.get("items") or []
+            media = items[0] if items and isinstance(items[0], dict) else None
+        if not isinstance(media, dict):
+            return None
+
+        carousel = media.get("carousel_media")
+        if not isinstance(carousel, list) or len(carousel) < 2:
+            return None
+
+        title = "Instagram carousel"
+        caption = media.get("caption")
+        if isinstance(caption, dict) and caption.get("text"):
+            title = str(caption["text"]).strip()[:72] or title
+
+        entries = []
+        for idx, item in enumerate(carousel, 1):
+            if not isinstance(item, dict):
+                continue
+            candidates = ((item.get("image_versions2") or {}).get("candidates") or [])
+            candidates = [x for x in candidates if isinstance(x, dict) and isinstance(x.get("url"), str)]
+            image = max(
+                candidates,
+                key=lambda x: int(x.get("width") or 0) * int(x.get("height") or 0),
+                default=None,
+            )
+            videos = [x for x in (item.get("video_versions") or []) if isinstance(x, dict) and isinstance(x.get("url"), str)]
+            video = max(
+                videos,
+                key=lambda x: int(x.get("width") or 0) * int(x.get("height") or 0),
+                default=None,
+            )
+            media_url = (video or image or {}).get("url")
+            if not media_url:
+                continue
+            item_id = str(item.get("pk") or item.get("id") or f"{shortcode}_{idx}")
+            item_headers = {"User-Agent": ua, "Referer": f"https://www.instagram.com/p/{shortcode}/"}
+            if video:
+                fmt = {
+                    "format_id": f"instagram-carousel-video-{idx}", "url": media_url, "ext": "mp4",
+                    "vcodec": "unknown", "acodec": "unknown", "protocol": urlsplit(media_url).scheme,
+                    "width": video.get("width"), "height": video.get("height"), "http_headers": item_headers,
+                }
+                entries.append({"id": item_id, "title": title, "webpage_url": url, "formats": [fmt]})
+            else:
+                fmt = {
+                    "format_id": f"instagram-carousel-image-{idx}", "url": media_url, "ext": "jpg",
+                    "vcodec": "none", "acodec": "none", "protocol": urlsplit(media_url).scheme,
+                    "width": image.get("width"), "height": image.get("height"), "http_headers": item_headers,
+                }
+                entries.append({
+                    "id": item_id, "title": title, "webpage_url": url, "image_url": media_url,
+                    "thumbnail": media_url, "formats": [fmt], "http_headers": item_headers,
+                })
+        if len(entries) < 2:
+            return None
+        logger.info("Instagram carousel GraphQL recovered shortcode=%s media=%d", shortcode, len(entries))
+        return {
+            "id": shortcode,
+            "title": title,
+            "webpage_url": url,
+            "entries": entries,
+            "formats": [],
+        }, f"https://www.instagram.com/p/{shortcode}/", _apply_cookie_policy(_base_opts(), url)
+    except Exception as exc:
+        logger.warning("Instagram carousel GraphQL fallback failed error_type=%s error=%s", type(exc).__name__, exc)
+        return None
+
+
 def _instagram_web_fallback(url: str) -> tuple[dict, str, dict] | None:
     """Recover public Instagram video from page metadata when its API path breaks."""
     try:
@@ -2198,6 +2332,11 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
     attempt. This keeps failures fast and preserves the most useful root cause.
     """
     platform = _platform_from_url(url)
+    if platform == "instagram" and "/p/" in urlsplit(url).path.lower():
+        carousel = _instagram_carousel_graphql_fallback(url)
+        if carousel:
+            return carousel
+
     if platform == "threads":
         for candidate in _url_variants(url):
             fallback = _threads_crawler_fallback(candidate)
