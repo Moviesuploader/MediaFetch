@@ -1293,7 +1293,7 @@ def _threads_crawler_fallback(url: str) -> tuple[dict, str, dict] | None:
 
         posts = []
         for block in re.findall(
-            r'<script\\s+type=["\\\']application/json["\\\'][^>]*>(.*?)</script>',
+            "<script\\s+type=[\\\"\\']application/json[\\\"\\'][^>]*>(.*?)</script>",
             html, flags=re.I | re.S,
         ):
             try:
