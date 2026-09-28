@@ -1294,7 +1294,7 @@ def _threads_crawler_fallback(url: str) -> tuple[dict, str, dict] | None:
         if post is None:
             # Some Threads video pages omit the post node from data-sjs for
             # Googlebot while still exposing the progressive MP4 in page data.
-            decoded = (response.text or "").replace("\\\/","/").replace("\\u0026","&").replace("&amp;","&")
+            decoded = (response.text or "").replace("\\/","/").replace("\\u0026","&").replace("&amp;","&")
             video_urls = []
             for candidate in re.findall(r'https?://[^"<>\\s]+', decoded):
                 low = candidate.lower()
@@ -1358,6 +1358,48 @@ def _threads_crawler_fallback(url: str) -> tuple[dict, str, dict] | None:
         return {"id": post_code, "title": title, "webpage_url": final_url, "entries": entries, "formats": []}, final_url, _base_opts()
     except Exception as exc:
         logger.warning("Threads structured extraction failed error_type=%s error=%s", type(exc).__name__, exc)
+        return None
+
+
+def _threads_api_fallback(url: str) -> tuple[dict, str, dict] | None:
+    """Fallback used by active open-source Threads downloaders when page JSON omits videos."""
+    if curl_requests is None:
+        return None
+    try:
+        response = curl_requests.post(
+            "https://www.threadsdl.app/api/threads",
+            json={"url": url},
+            timeout=15,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
+        if response.status_code >= 400:
+            logger.warning("Threads API fallback status=%s", response.status_code)
+            return None
+        data = response.json()
+        medias = data.get("medias") if isinstance(data, dict) else None
+        if not isinstance(medias, list):
+            return None
+        entries = []
+        for idx, media in enumerate(medias, 1):
+            if not isinstance(media, dict):
+                continue
+            media_type = int(media.get("mediaType") or 0)
+            if media_type == 2 and isinstance(media.get("cover"), str):
+                media_url = media["cover"]
+                fmt = {"format_id": f"threads-api-video-{idx}", "url": media_url, "ext": "mp4",
+                       "vcodec": "unknown", "acodec": "unknown", "protocol": urlsplit(media_url).scheme,
+                       "http_headers": {"Referer": "https://www.threads.com/"}}
+                entries.append({"id": f"threads_{idx}", "title": (data.get("text") or "Threads video")[:72],
+                                "webpage_url": url, "formats": [fmt]})
+        if not entries:
+            return None
+        logger.info("Threads API video fallback recovered media=%d", len(entries))
+        if len(entries) == 1:
+            return entries[0], url, _base_opts()
+        return {"id": "threads", "title": (data.get("text") or "Threads post")[:72],
+                "webpage_url": url, "entries": entries, "formats": []}, url, _base_opts()
+    except Exception as exc:
+        logger.warning("Threads API fallback failed error_type=%s error=%s", type(exc).__name__, exc)
         return None
 
 
@@ -1532,6 +1574,11 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
             if fallback:
                 logger.info("Threads structured fallback succeeded url=%s", candidate)
                 return fallback
+        # Current public video posts can omit their target node from crawler JSON.
+        # Use the same dedicated Threads API fallback used by active downloader projects.
+        fallback = _threads_api_fallback(url)
+        if fallback:
+            return fallback
 
     if platform == "youtube" and "/post/" in urlsplit(url).path.lower():
         fallback = _youtube_post_fallback(url)
