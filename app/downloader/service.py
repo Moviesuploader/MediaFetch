@@ -1307,6 +1307,16 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
     attempt. This keeps failures fast and preserves the most useful root cause.
     """
     platform = _platform_from_url(url)
+    if platform == "threads":
+        # Threads share URLs currently confuse yt-dlp because the share token
+        # is not the canonical post shortcode. Public OpenGraph metadata is
+        # both faster and more reliable, so try it before the extractor.
+        for candidate in _url_variants(url):
+            fallback = _meta_public_page_fallback(candidate)
+            if fallback:
+                logger.info("Threads public-page fallback succeeded url=%s", candidate)
+                return fallback
+
     if platform == "reddit":
         original_reddit_url = url
         url = _resolve_reddit_short_url(url)
