@@ -1436,34 +1436,55 @@ def _threads_graphql_fallback(url: str) -> tuple[dict, str, dict] | None:
             jar.load(ignore_discard=True, ignore_expires=True)
             cookies = {cookie.name: cookie.value for cookie in jar}
 
-        variables = {
-            "check_for_unavailable_replies": True,
-            "first": 10,
-            "postID": str(post_id),
-            "__relay_internal__pv__BarcelonaIsLoggedInrelayprovider": True,
-            "__relay_internal__pv__BarcelonaIsThreadContextHeaderEnabledrelayprovider": False,
-            "__relay_internal__pv__BarcelonaIsThreadContextHeaderFollowButtonEnabledrelayprovider": False,
-            "__relay_internal__pv__BarcelonaUseCometVideoPlaybackEnginerelayprovider": False,
-            "__relay_internal__pv__BarcelonaOptionalCookiesEnabledrelayprovider": False,
-            "__relay_internal__pv__BarcelonaIsViewCountEnabledrelayprovider": False,
-            "__relay_internal__pv__BarcelonaShouldShowFediverseM075Featuresrelayprovider": False,
+        # Current Threads web query (BarcelonaPostPageContentQuery).
+        # Important: obtain the per-page LSD token first; Meta rejects stale
+        # hard-coded LSD/doc combinations or may return an empty thread.
+        clean_url = f"https://www.threads.com{urlsplit(final_url).path}"
+        page_headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         }
+        page = curl_requests.get(clean_url, headers=page_headers, timeout=25, impersonate="chrome")
+        html = page.text or ""
+        lsd_match = re.search(r'"LSD",\[\],\{"token":"([^"]+)"', html)
+        if not lsd_match:
+            logger.warning("Threads GraphQL page has no LSD token code=%s status=%s", code, page.status_code)
+            return None
+        lsd = lsd_match.group(1)
 
+        # Verified public implementation (2026-08): anonymous API form works
+        # for public posts even when an authenticated request is rejected.
         headers = {
             "Accept": "*/*",
             "Content-Type": "application/x-www-form-urlencoded",
-                                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+            "User-Agent": page_headers["User-Agent"],
+            "X-FB-LSD": lsd,
             "X-IG-App-ID": "238260118697367",
-            "X-Fb-Lsd": "hgmSkqDnLNFckqa7t1vJdn",
-            "Sec-Fetch-Mode": "cors",
+            "X-ASBD-ID": "129477",
+            "X-FB-Friendly-Name": "BarcelonaPostPageContentQuery",
+            "Origin": "https://www.threads.com",
+            "Referer": clean_url,
             "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Dest": "empty",
         }
         response = curl_requests.post(
-            "https://www.threads.net/api/graphql",
+            "https://www.threads.com/api/graphql",
             data={
-                "variables": json.dumps(variables, separators=(",", ":")),
-                "doc_id": "7448594591874178",
-                "lsd": "hgmSkqDnLNFckqa7t1vJdn",
+                "av": "0",
+                "__user": "0",
+                "__a": "1",
+                "__req": "1",
+                "dpr": "1",
+                "lsd": lsd,
+                "fb_api_caller_class": "RelayModern",
+                "fb_api_req_friendly_name": "BarcelonaPostPageContentQuery",
+                "variables": json.dumps({"postID": str(post_id)}, separators=(",", ":")),
+                "server_timestamps": "true",
+                "doc_id": "25460088156920903",
             },
             headers=headers,
             impersonate="chrome",
@@ -1473,11 +1494,14 @@ def _threads_graphql_fallback(url: str) -> tuple[dict, str, dict] | None:
             logger.warning("Threads GraphQL HTTP status=%s code=%s", response.status_code, code)
             return None
         try:
-            payload = response.json()
+            raw = response.text or ""
+            if raw.startswith("for (;;);"):
+                raw = raw[len("for (;;);"):]
+            payload = json.loads(raw)
         except Exception:
             logger.warning("Threads GraphQL returned non-JSON code=%s", code)
             return None
-        if payload.get("errors"):
+        if payload.get("errors") and payload.get("data") is None:
             err = payload.get("errors") or []
             summary = (err[0].get("summary") or err[0].get("message") or "unknown") if err and isinstance(err[0], dict) else "unknown"
             logger.warning("Threads GraphQL API error code=%s summary=%s", code, str(summary)[:180])
