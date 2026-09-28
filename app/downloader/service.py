@@ -1292,6 +1292,25 @@ def _threads_crawler_fallback(url: str) -> tuple[dict, str, dict] | None:
                 break
 
         if post is None:
+            # Some Threads video pages omit the post node from data-sjs for
+            # Googlebot while still exposing the progressive MP4 in page data.
+            decoded = (response.text or "").replace("\\\/","/").replace("\\u0026","&").replace("&amp;","&")
+            video_urls = []
+            for candidate in re.findall(r'https?://[^"<>\\s]+', decoded):
+                low = candidate.lower()
+                if (".mp4" in low or "video" in low) and ("cdninstagram.com" in low or "fbcdn.net" in low):
+                    if candidate not in video_urls:
+                        video_urls.append(candidate)
+            if video_urls:
+                media_url = video_urls[0]
+                logger.info("Threads progressive video recovered code=%s candidates=%d", post_code, len(video_urls))
+                fmt = {
+                    "format_id": "threads-progressive-video", "url": media_url, "ext": "mp4",
+                    "vcodec": "unknown", "acodec": "unknown",
+                    "protocol": urlsplit(media_url).scheme,
+                    "http_headers": {"Referer": "https://www.threads.com/", "User-Agent": ua},
+                }
+                return {"id": post_code, "title": f"Threads video {post_code}", "webpage_url": final_url, "formats": [fmt]}, final_url, _base_opts()
             logger.warning("Threads exact post not found code=%s data_sjs_blobs=%d", post_code, blob_count)
             return None
 
