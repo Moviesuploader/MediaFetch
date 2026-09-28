@@ -1509,15 +1509,6 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
     attempt. This keeps failures fast and preserves the most useful root cause.
     """
     platform = _platform_from_url(url)
-    if platform == "threads":
-        # Threads' public share surface serves richer media metadata to link
-        # preview crawlers than to anonymous browser clients.
-        for candidate in _url_variants(url):
-            fallback = _threads_crawler_fallback(candidate) or _meta_public_page_fallback(candidate)
-            if fallback:
-                logger.info("Threads crawler/public fallback succeeded url=%s", candidate)
-                return fallback
-
     if platform == "youtube" and "/post/" in urlsplit(url).path.lower():
         fallback = _youtube_post_fallback(url)
         if fallback:
