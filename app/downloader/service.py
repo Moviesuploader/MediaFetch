@@ -1375,14 +1375,30 @@ def _threads_authenticated_fallback(url: str) -> tuple[dict, str, dict] | None:
         cookies = {cookie.name: cookie.value for cookie in jar}
         ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
               "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36")
+        # Resolve /share/... anonymously first. Threads can return 404 when a
+        # logged-in cookie jar is sent directly to the share endpoint, even
+        # though the share URL publicly redirects to a valid /@user/post/CODE.
+        resolve = curl_requests.get(
+            url, allow_redirects=True, timeout=15,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"},
+        )
+        resolved_url = str(resolve.url)
+        resolved_parts = urlsplit(resolved_url)
+        canonical_url = resolved_url
+        if re.search(r"/post/[A-Za-z0-9_-]+", resolved_parts.path):
+            canonical_url = resolved_parts._replace(query="", fragment="").geturl()
+        logger.info("Threads auth resolver status=%s canonical_host=%s canonical_path=%s",
+                    resolve.status_code, urlsplit(canonical_url).netloc, urlsplit(canonical_url).path)
+
         response = curl_requests.get(
-            url, impersonate="chrome", allow_redirects=True, timeout=20, cookies=cookies,
+            canonical_url, impersonate="chrome", allow_redirects=True, timeout=20, cookies=cookies,
             headers={
                 "User-Agent": ua,
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://www.threads.com/",
                 "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-Site": "none", "Sec-Fetch-User": "?1",
+                "Sec-Fetch-Site": "same-origin", "Sec-Fetch-User": "?1",
                 "Upgrade-Insecure-Requests": "1",
             },
         )
