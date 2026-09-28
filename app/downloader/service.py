@@ -1310,7 +1310,7 @@ def _threads_crawler_fallback(url: str) -> tuple[dict, str, dict] | None:
                     "protocol": urlsplit(media_url).scheme,
                     "http_headers": {"Referer": "https://www.threads.com/", "User-Agent": ua},
                 }
-                return {"id": post_code, "title": f"Threads video {post_code}", "webpage_url": final_url, "formats": [fmt]}, final_url, _base_opts()
+                return {"id": post_code, "title": f"Threads video {post_code}", "webpage_url": final_url, "formats": [fmt], "_mediafetch_direct_video": media_url, "_mediafetch_direct_headers": fmt["http_headers"]}, final_url, _base_opts()
             logger.warning("Threads exact post not found code=%s data_sjs_blobs=%d", post_code, blob_count)
             return None
 
@@ -1362,126 +1362,181 @@ def _threads_crawler_fallback(url: str) -> tuple[dict, str, dict] | None:
 
 
 def _threads_authenticated_fallback(url: str) -> tuple[dict, str, dict] | None:
-    """Retry Threads with the configured logged-in Instagram/Meta web session."""
+    """Resolve Threads with a logged-in Meta session and browser-navigation headers.
+
+    Threads may return 404 when the signed canonical URL's query parameters are
+    stripped. Keep the complete resolved URL (including xmt/slof), then parse
+    the inlined video_versions/image_versions2 payload directly.
+    """
     if curl_requests is None:
         return None
     cookie_file = _materialize_instagram_cookie_file()
     if not cookie_file or not cookie_file.is_file():
-        logger.info("Threads authenticated fallback unavailable: Instagram cookie jar not configured")
+        logger.info("Threads authenticated fallback unavailable: Meta cookie jar not configured")
         return None
+
     try:
         jar = http.cookiejar.MozillaCookieJar(str(cookie_file))
         jar.load(ignore_discard=True, ignore_expires=True)
         cookies = {cookie.name: cookie.value for cookie in jar}
-        ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-              "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36")
-        # Resolve /share/... anonymously first. Threads can return 404 when a
-        # logged-in cookie jar is sent directly to the share endpoint, even
-        # though the share URL publicly redirects to a valid /@user/post/CODE.
+        ua = (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        )
+
+        # Resolve /share/... first, but KEEP the signed query string. Meta can
+        # reject the same canonical path with 404 after xmt/slof are removed.
         resolve = curl_requests.get(
-            url, allow_redirects=True, timeout=15,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"},
+            url,
+            allow_redirects=True,
+            timeout=20,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+                "Accept": "text/html,application/xhtml+xml",
+            },
         )
         resolved_url = str(resolve.url)
-        resolved_parts = urlsplit(resolved_url)
-        canonical_url = resolved_url
-        if re.search(r"/post/[A-Za-z0-9_-]+", resolved_parts.path):
-            canonical_url = resolved_parts._replace(query="", fragment="").geturl()
-        logger.info("Threads auth resolver status=%s canonical_host=%s canonical_path=%s",
-                    resolve.status_code, urlsplit(canonical_url).netloc, urlsplit(canonical_url).path)
+        match = re.search(r"/post/([A-Za-z0-9_-]+)", urlsplit(resolved_url).path)
+        if not match:
+            logger.warning("Threads auth resolver did not reach a post status=%s", resolve.status_code)
+            return None
+        post_code = match.group(1)
+        logger.info(
+            "Threads auth resolver status=%s canonical_host=%s canonical_path=%s signed_query=%s",
+            resolve.status_code,
+            urlsplit(resolved_url).netloc,
+            urlsplit(resolved_url).path,
+            bool(urlsplit(resolved_url).query),
+        )
 
         response = curl_requests.get(
-            canonical_url, impersonate="chrome", allow_redirects=True, timeout=20, cookies=cookies,
+            resolved_url,
+            impersonate="chrome",
+            allow_redirects=True,
+            timeout=25,
+            cookies=cookies,
             headers={
                 "User-Agent": ua,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.9",
                 "Referer": "https://www.threads.com/",
-                "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-Site": "same-origin", "Sec-Fetch-User": "?1",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-User": "?1",
                 "Upgrade-Insecure-Requests": "1",
             },
         )
         final_url = str(response.url)
         if response.status_code >= 400 or "/login" in urlsplit(final_url).path.lower():
-            logger.warning("Threads authenticated page unavailable status=%s final_host=%s",
-                           response.status_code, urlsplit(final_url).netloc)
-            return None
-        match = re.search(r"/post/([A-Za-z0-9_-]+)", urlsplit(final_url).path)
-        if not match:
-            return None
-        post_code = match.group(1)
-
-        class _P(HTMLParser):
-            def __init__(self):
-                super().__init__(); self.attrs=None; self.body=None; self.scripts=[]
-            def handle_starttag(self, tag, attrs):
-                if tag == "script": self.attrs=dict(attrs); self.body=[]
-            def handle_data(self, data):
-                if self.body is not None: self.body.append(data)
-            def handle_endtag(self, tag):
-                if tag == "script" and self.body is not None:
-                    self.scripts.append((self.attrs or {}, "".join(self.body))); self.attrs=None; self.body=None
-
-        def walk(v):
-            if isinstance(v, dict):
-                yield v
-                for child in v.values(): yield from walk(child)
-            elif isinstance(v, list):
-                for child in v: yield from walk(child)
-
-        parser=_P(); parser.feed(response.text)
-        target=None; parsed=0
-        for attrs, body in parser.scripts:
-            if attrs.get("type") != "application/json" or not body.lstrip().startswith("{"): continue
-            try: payload=json.loads(body)
-            except json.JSONDecodeError: continue
-            parsed += 1
-            for node in walk(payload):
-                if node.get("code") == post_code:
-                    target=node; break
-            if target is not None: break
-        if target is None:
-            logger.warning("Threads authenticated exact post missing code=%s parsed_json=%d", post_code, parsed)
+            logger.warning(
+                "Threads authenticated page unavailable status=%s final_host=%s",
+                response.status_code,
+                urlsplit(final_url).netloc,
+            )
             return None
 
-        def has_media(n):
-            return isinstance(n,dict) and bool(n.get("carousel_media") or n.get("video_versions") or n.get("image_versions2"))
-        source=target
-        if not has_media(source):
-            app=target.get("text_post_app_info")
-            if isinstance(app,dict):
-                linked=app.get("linked_inline_media")
-                if has_media(linked): source=linked
-                else:
-                    share=app.get("share_info")
-                    quoted=share.get("quoted_attachment_post") if isinstance(share,dict) else None
-                    if has_media(quoted): source=quoted
-        items=source.get("carousel_media") or [source]
-        entries=[]
-        for idx,item in enumerate(items,1):
-            if not isinstance(item,dict): continue
-            vids=[x for x in (item.get("video_versions") or []) if isinstance(x,dict) and isinstance(x.get("url"),str)]
-            if vids:
-                v=max(vids,key=lambda x:int(x.get("width") or 0)*int(x.get("height") or 0))
-                media_url=v["url"]
-                fmt={"format_id":f"threads-auth-video-{idx}","url":media_url,"ext":"mp4",
-                     "vcodec":"unknown","acodec":"unknown","width":v.get("width"),"height":v.get("height"),
-                     "protocol":urlsplit(media_url).scheme,
-                     "http_headers":{"Referer":final_url,"User-Agent":ua}}
-                entries.append({"id":f"{post_code}_{idx}","title":f"Threads video {post_code}",
-                                "webpage_url":final_url,"formats":[fmt]})
-        if not entries:
-            logger.warning("Threads authenticated post has no video code=%s",post_code)
+        # Nostos-style extraction: Threads repeats escaped JSON in the HTML.
+        # Parse every video_versions array rather than requiring the outer post
+        # node to be present (the exact node is omitted for the failing videos).
+        text = (response.text or "").replace('\\\"', "\\x00").replace("\\/", "/").replace("\\x00", '\\\"')
+
+        def json_literal_at(source: str, pos: int):
+            opening = source[pos]
+            closing = {"[": "]", "{": "}"}[opening]
+            depth = 0
+            in_string = False
+            escaped = False
+            for idx in range(pos, len(source)):
+                ch = source[idx]
+                if in_string:
+                    if escaped:
+                        escaped = False
+                    elif ch == "\\\\":
+                        escaped = True
+                    elif ch == '"':
+                        in_string = False
+                    continue
+                if ch == '"':
+                    in_string = True
+                elif ch == opening:
+                    depth += 1
+                elif ch == closing:
+                    depth -= 1
+                    if depth == 0:
+                        return json.loads(source[pos:idx + 1])
+            raise ValueError("unterminated Threads JSON literal")
+
+        videos: list[dict] = []
+        seen: set[str] = set()
+        for vm in re.finditer(r'"video_versions":\\s*(\\[)', text):
+            try:
+                versions = json_literal_at(text, vm.start(1))
+            except (ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(versions, list):
+                continue
+            for version in versions:
+                if not isinstance(version, dict):
+                    continue
+                media_url = version.get("url")
+                if not isinstance(media_url, str) or not media_url.startswith(("http://", "https://")):
+                    continue
+                if media_url in seen:
+                    continue
+                seen.add(media_url)
+                videos.append(version)
+
+        if not videos:
+            logger.warning(
+                "Threads authenticated page loaded but no video_versions code=%s html_bytes=%d",
+                post_code,
+                len(response.content or b""),
+            )
             return None
-        logger.info("Threads authenticated video recovered code=%s media=%d",post_code,len(entries))
-        if len(entries)==1: return entries[0],final_url,_base_opts()
-        return {"id":post_code,"title":f"Threads post {post_code}","webpage_url":final_url,
-                "entries":entries,"formats":[]},final_url,_base_opts()
+
+        # Prefer the largest progressive variant. Duplicate video_versions types
+        # usually point at the same muxed MP4.
+        best = max(
+            videos,
+            key=lambda item: (
+                int(item.get("width") or 0) * int(item.get("height") or 0),
+                int(item.get("bitrate") or 0),
+            ),
+        )
+        media_url = best["url"]
+        fmt = {
+            "format_id": "threads-auth-progressive",
+            "url": media_url,
+            "ext": "mp4",
+            "vcodec": "unknown",
+            "acodec": "unknown",
+            "width": best.get("width"),
+            "height": best.get("height"),
+            "protocol": urlsplit(media_url).scheme,
+            "http_headers": {"Referer": final_url, "User-Agent": ua},
+        }
+        info = {
+            "id": post_code,
+            "title": f"Threads video {post_code}",
+            "webpage_url": final_url,
+            "formats": [fmt],
+            "_mediafetch_direct_video": media_url,
+            "_mediafetch_direct_headers": fmt["http_headers"],
+        }
+        logger.info(
+            "Threads authenticated progressive video recovered code=%s variants=%d",
+            post_code,
+            len(videos),
+        )
+        return info, final_url, _base_opts()
     except Exception as exc:
-        logger.warning("Threads authenticated fallback failed error_type=%s error=%s",type(exc).__name__,exc)
+        logger.warning(
+            "Threads authenticated fallback failed error_type=%s error=%s",
+            type(exc).__name__,
+            exc,
+        )
         return None
-
 
 def _threads_api_fallback(url: str) -> tuple[dict, str, dict] | None:
     """Fallback used by active open-source Threads downloaders when page JSON omits videos."""
@@ -2152,6 +2207,55 @@ def _download_images(
     return images
 
 
+def _download_direct_video(
+    media_url: str,
+    output_dir: str,
+    media_id: str,
+    max_file_mb: int,
+    notify: Callable[[float, str], None],
+    headers: dict[str, str] | None = None,
+) -> Path:
+    """Stream an already-resolved progressive video URL directly to disk."""
+    target = Path(output_dir) / f"Threads-{media_id}.mp4"
+    part = target.with_suffix(".mp4.part")
+    request_headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+        **(headers or {}),
+    }
+    request = urllib.request.Request(media_url, headers=request_headers)
+    limit = max_file_mb * 1024 * 1024
+    downloaded = 0
+    started = time.monotonic()
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response, open(part, "wb") as fh:
+            total = int(response.headers.get("Content-Length") or 0)
+            if total and total > limit:
+                raise DownloadError(f"Video exceeds the {max_file_mb} MB upload limit.")
+            while True:
+                chunk = response.read(256 * 1024)
+                if not chunk:
+                    break
+                downloaded += len(chunk)
+                if downloaded > limit:
+                    raise DownloadError(f"Video exceeds the {max_file_mb} MB upload limit.")
+                fh.write(chunk)
+                elapsed = max(time.monotonic() - started, 0.001)
+                percent = (downloaded / total * 100) if total else 0
+                notify(percent, f"{percent:.0f}% • {downloaded / elapsed / (1024 * 1024):.1f} MB/s")
+        if downloaded <= 0:
+            raise DownloadError("Threads returned an empty video.")
+        part.replace(target)
+        notify(100, "ready")
+        return target
+    except Exception:
+        try:
+            part.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+
 def _download_sync(
     url: str,
     output_dir: str,
@@ -2252,6 +2356,18 @@ def _download_sync(
             mode = "best"
             selector = "bv+ba/b[vcodec!=none][ext=mp4]/b[vcodec!=none]" if platform == "facebook" else "bv*+ba/b"
             opts["format"] = selector
+
+        direct_threads_video = info.get("_mediafetch_direct_video") if platform == "threads" else None
+        if mode != "audio" and isinstance(direct_threads_video, str):
+            logger.info("Threads direct CDN download starting id=%s", info.get("id"))
+            return _download_direct_video(
+                direct_threads_video,
+                output_dir,
+                str(info.get("id") or "video"),
+                max_file_mb,
+                notify,
+                info.get("_mediafetch_direct_headers") if isinstance(info.get("_mediafetch_direct_headers"), dict) else None,
+            )
 
         if mode == "photo" or (mode != "audio" and not _has_video_format(info)):
             # If extraction/fallback already produced an image URL, use it
