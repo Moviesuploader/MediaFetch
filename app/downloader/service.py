@@ -1406,26 +1406,19 @@ def _threads_graphql_fallback(url: str) -> tuple[dict, str, dict] | None:
         headers = {
             "Accept": "*/*",
             "Content-Type": "application/x-www-form-urlencoded",
-            "Referer": final_url,
-            "Origin": "https://www.threads.com",
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+                                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
             "X-IG-App-ID": "238260118697367",
             "X-Fb-Lsd": "hgmSkqDnLNFckqa7t1vJdn",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
         }
-        csrf = cookies.get("csrftoken")
-        if csrf:
-            headers["X-CSRFToken"] = csrf
-
         response = curl_requests.post(
-            "https://www.threads.com/api/graphql",
+            "https://www.threads.net/api/graphql",
             data={
                 "variables": json.dumps(variables, separators=(",", ":")),
                 "doc_id": "7448594591874178",
                 "lsd": "hgmSkqDnLNFckqa7t1vJdn",
             },
-            cookies=cookies,
             headers=headers,
             impersonate="chrome",
             timeout=25,
@@ -1444,7 +1437,15 @@ def _threads_graphql_fallback(url: str) -> tuple[dict, str, dict] | None:
             logger.warning("Threads GraphQL API error code=%s summary=%s", code, str(summary)[:180])
             return None
 
-        data = ((payload.get("data") or {}).get("data")) or {}
+        root_data = payload.get("data") or {}
+        data = root_data.get("data") or {}
+        logger.info(
+            "Threads GraphQL response shape code=%s root_keys=%s data_keys=%s edges=%d",
+            code,
+            sorted(str(k) for k in root_data.keys())[:12],
+            sorted(str(k) for k in data.keys())[:12] if isinstance(data, dict) else [],
+            len(data.get("edges") or []) if isinstance(data, dict) else 0,
+        )
         target = None
         fallback = None
         for edge in data.get("edges") or []:
