@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     # Optional separate Instagram cookie jar for sites that require login.
     ytdlp_instagram_cookies_file: str = "/tmp/mediafetch-instagram-cookies.txt"
     ytdlp_instagram_cookies_b64: str = ""
-    # Optional dedicated Facebook cookie jar. Keep this separate from YouTube
+    # Optional outbound proxy used only for Threads extraction/download requests.\n    # Supports http(s):// and socks5:// URLs accepted by curl-cffi/Playwright.\n    threads_proxy_url: str = ""\n    # Optional dedicated Facebook cookie jar. Keep this separate from YouTube
     # and Instagram so credentials are never sent to the wrong platform.
     ytdlp_facebook_cookies_file: str = "/tmp/mediafetch-facebook-cookies.txt"
     ytdlp_facebook_cookies_b64: str = ""
