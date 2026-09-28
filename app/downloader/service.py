@@ -1361,6 +1361,162 @@ def _threads_crawler_fallback(url: str) -> tuple[dict, str, dict] | None:
         return None
 
 
+def _threads_graphql_fallback(url: str) -> tuple[dict, str, dict] | None:
+    """Resolve Threads media through Meta's own Barcelona post GraphQL query."""
+    if curl_requests is None:
+        return None
+    try:
+        resolve = curl_requests.get(
+            url, allow_redirects=True, timeout=20,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"},
+        )
+        final_url = str(resolve.url)
+        match = re.search(r"/post/([A-Za-z0-9_-]+)", urlsplit(final_url).path)
+        if not match:
+            return None
+        code = match.group(1)
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+        post_id = 0
+        for ch in code:
+            digit = alphabet.find(ch)
+            if digit < 0:
+                return None
+            post_id = post_id * 64 + digit
+
+        cookie_file = _materialize_instagram_cookie_file()
+        cookies = {}
+        if cookie_file and cookie_file.is_file():
+            jar = http.cookiejar.MozillaCookieJar(str(cookie_file))
+            jar.load(ignore_discard=True, ignore_expires=True)
+            cookies = {cookie.name: cookie.value for cookie in jar}
+
+        providers = (
+            "BarcelonaHasPermalinkIndentation", "BarcelonaIsLoggedIn",
+            "BarcelonaHasPostAuthorNotifControls", "BarcelonaShouldShowFediverseM1Features",
+            "BarcelonaHasPermalinkPodcastCard", "BarcelonaHasDearAlgoConsumption",
+            "BarcelonaHasEventBadge", "BarcelonaGenAIRepliesEnabled",
+            "BarcelonaIsSearchDiscoveryEnabled", "BarcelonaHasCommunities",
+            "BarcelonaHasGameScoreShare", "BarcelonaHasPublicViewCountCard",
+            "BarcelonaHasCommunityEntityCard", "BarcelonaHasScorecardCommunity",
+            "BarcelonaHasSportTeamAllegianceCard", "BarcelonaHasMusic",
+            "BarcelonaHasNewspaperLinkStyle", "BarcelonaHasMessaging",
+            "BarcelonaHasPodcastTextFragments", "BarcelonaShouldFulfillLightboxQuery",
+            "BarcelonaHasViewerReplied", "BarcelonaHasPrivateRepliesDeprecation",
+            "BarcelonaHasGhostPostEmojiActivation", "BarcelonaOptionalCookiesEnabled",
+            "BarcelonaHasDearAlgoWebProduction", "BarcelonaHasWebFavicons",
+            "BarcelonaIsCrawler", "BarcelonaHasCommunityTopContributors",
+            "BarcelonaCanSeeSponsoredContent", "BarcelonaShouldShowFediverseM075Features",
+            "BarcelonaIsInternalUser",
+        )
+        variables = {"postID": str(post_id)}
+        for name in providers:
+            variables[f"__relay_internal__pv__{name}relayprovider"] = False
+
+        headers = {
+            "Accept": "*/*",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Referer": final_url,
+            "Origin": "https://www.threads.com",
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+            "X-IG-App-ID": "238260118697367",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+        }
+        csrf = cookies.get("csrftoken")
+        if csrf:
+            headers["X-CSRFToken"] = csrf
+
+        response = curl_requests.post(
+            "https://www.threads.com/graphql/query",
+            data={
+                "variables": json.dumps(variables, separators=(",", ":")),
+                "doc_id": "27419285281047858",
+                "server_timestamps": "true",
+            },
+            cookies=cookies,
+            headers=headers,
+            impersonate="chrome",
+            timeout=25,
+        )
+        if response.status_code != 200:
+            logger.warning("Threads GraphQL HTTP status=%s code=%s", response.status_code, code)
+            return None
+        try:
+            payload = response.json()
+        except Exception:
+            logger.warning("Threads GraphQL returned non-JSON code=%s", code)
+            return None
+        if payload.get("errors"):
+            err = payload.get("errors") or []
+            summary = (err[0].get("summary") or err[0].get("message") or "unknown") if err and isinstance(err[0], dict) else "unknown"
+            logger.warning("Threads GraphQL API error code=%s summary=%s", code, str(summary)[:180])
+            return None
+
+        data = ((payload.get("data") or {}).get("data")) or {}
+        target = None
+        fallback = None
+        for edge in data.get("edges") or []:
+            node = (edge or {}).get("node") or {}
+            for item in node.get("thread_items") or []:
+                post = (item or {}).get("post")
+                if not isinstance(post, dict):
+                    continue
+                if fallback is None:
+                    fallback = post
+                if post.get("code") == code:
+                    target = post
+                    break
+            if target is not None:
+                break
+        post = target or fallback
+        if not isinstance(post, dict):
+            logger.warning("Threads GraphQL returned no post code=%s", code)
+            return None
+
+        def best(items):
+            valid = [x for x in (items or []) if isinstance(x, dict) and isinstance(x.get("url"), str)]
+            return max(valid, key=lambda x: int(x.get("width") or 0) * int(x.get("height") or 0), default=None)
+
+        caption = post.get("caption")
+        title = ((caption.get("text") if isinstance(caption, dict) else "") or f"Threads post {code}").strip()[:72]
+        items = post.get("carousel_media") or [post]
+        entries = []
+        for idx, item in enumerate(items, 1):
+            if not isinstance(item, dict):
+                continue
+            video = best(item.get("video_versions"))
+            if video:
+                media_url = video["url"]
+                h = {"Referer": final_url, "User-Agent": headers["User-Agent"]}
+                fmt = {"format_id": f"threads-gql-video-{idx}", "url": media_url, "ext": "mp4",
+                       "vcodec": "unknown", "acodec": "unknown", "width": video.get("width"),
+                       "height": video.get("height"), "protocol": urlsplit(media_url).scheme,
+                       "http_headers": h}
+                entries.append({"id": f"{code}_{idx}", "title": title, "webpage_url": final_url,
+                                "formats": [fmt], "_mediafetch_direct_video": media_url,
+                                "_mediafetch_direct_headers": h})
+                continue
+            iv = item.get("image_versions2")
+            image = best(iv.get("candidates") if isinstance(iv, dict) else None)
+            if image:
+                media_url = image["url"]
+                fmt = {"format_id": f"threads-gql-image-{idx}", "url": media_url, "ext": "jpg",
+                       "vcodec": "none", "acodec": "none", "width": image.get("width"),
+                       "height": image.get("height"), "protocol": urlsplit(media_url).scheme}
+                entries.append({"id": f"{code}_{idx}", "title": title, "webpage_url": final_url,
+                                "image_url": media_url, "thumbnail": media_url, "formats": [fmt]})
+        if not entries:
+            logger.warning("Threads GraphQL post had no media code=%s", code)
+            return None
+        logger.info("Threads GraphQL media recovered code=%s media=%d", code, len(entries))
+        if len(entries) == 1:
+            return entries[0], final_url, _base_opts()
+        return {"id": code, "title": title, "webpage_url": final_url, "entries": entries, "formats": []}, final_url, _base_opts()
+    except Exception as exc:
+        logger.warning("Threads GraphQL fallback failed error_type=%s error=%s", type(exc).__name__, exc)
+        return None
+
+
 def _threads_authenticated_fallback(url: str) -> tuple[dict, str, dict] | None:
     """Resolve Threads with a logged-in Meta session and browser-navigation headers.
 
@@ -1751,12 +1907,12 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
             if fallback:
                 logger.info("Threads structured fallback succeeded url=%s", candidate)
                 return fallback
-        # Current public video posts can omit their target node from crawler JSON.
-        # Use the same dedicated Threads API fallback used by active downloader projects.
-        fallback = _threads_authenticated_fallback(url)
+        # Video posts can omit the target node from crawler HTML entirely.
+        # Query Meta's Barcelona post GraphQL directly before any HTML/session fallback.
+        fallback = _threads_graphql_fallback(url)
         if fallback:
             return fallback
-        fallback = _threads_api_fallback(url)
+        fallback = _threads_authenticated_fallback(url)
         if fallback:
             return fallback
 
