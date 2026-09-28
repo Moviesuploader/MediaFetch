@@ -977,14 +977,19 @@ def _instagram_carousel_graphql_fallback(url: str) -> tuple[dict, str, dict] | N
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     )
     try:
+        # Keep this request anonymous. Passing exported Instagram login cookies
+        # here can send public post requests into a login/redirect loop when
+        # the cookie session is stale. The carousel GraphQL query works on the
+        # public web session; the GET is only to establish fresh web cookies
+        # (notably csrftoken) before the POST.
         session = curl_requests.Session(impersonate="chrome")
         home = session.get(
             "https://www.instagram.com/",
-            cookies=cookies or None,
             headers={"User-Agent": ua, "Accept": "text/html,*/*"},
             timeout=20,
+            allow_redirects=True,
         )
-        csrf = session.cookies.get("csrftoken") or cookies.get("csrftoken") or ""
+        csrf = session.cookies.get("csrftoken") or ""
         headers = {
             "User-Agent": ua,
             "Accept": "*/*",
