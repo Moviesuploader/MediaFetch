@@ -1207,7 +1207,14 @@ def _threads_crawler_fallback(url: str) -> tuple[dict, str, dict] | None:
                 yield from walk(child)
 
     def has_media(node):
-        return bool(node.get("carousel_media") or node.get("video_versions") or node.get("image_versions2"))
+        if not isinstance(node, dict):
+            return False
+        if isinstance(node.get("video_versions"), list) and node.get("video_versions"):
+            return True
+        if isinstance(node.get("carousel_media"), list) and node.get("carousel_media"):
+            return True
+        iv = node.get("image_versions2")
+        return bool(isinstance(iv, dict) and isinstance(iv.get("candidates"), list) and iv.get("candidates"))
 
     def media_source(post):
         if has_media(post):
@@ -1219,9 +1226,10 @@ def _threads_crawler_fallback(url: str) -> tuple[dict, str, dict] | None:
                 return linked
             share = app_info.get("share_info")
             if isinstance(share, dict):
-                quoted = share.get("quoted_attachment_post")
-                if isinstance(quoted, dict) and has_media(quoted):
-                    return quoted
+                for key in ("quoted_attachment_post", "quoted_post", "reposted_post"):
+                    nested = share.get(key)
+                    if isinstance(nested, dict) and has_media(nested):
+                        return nested
         return post
 
     def best_variant(items):
@@ -1258,20 +1266,20 @@ def _threads_crawler_fallback(url: str) -> tuple[dict, str, dict] | None:
         canonical_path = urlsplit(final_url).path.rstrip("/")
         canonical_url = f"https://www.threads.com{canonical_path}"
         if canonical_url != final_url:
-            canonical_response = curl_requests.get(
-                canonical_url,
-                allow_redirects=True,
-                timeout=20,
-                headers={
-                    "User-Agent": ua,
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.5",
-                },
-            )
+            nav_headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-GB,en;q=0.9",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-User": "?1",
+            }
+            canonical_response = curl_requests.get(canonical_url, allow_redirects=True, timeout=20, headers=nav_headers, impersonate="chrome")
             if canonical_response.status_code < 400:
                 response = canonical_response
                 final_url = canonical_url
-                logger.info("Threads canonical public page loaded code=%s", post_code)
+                logger.info("Threads canonical browser page loaded code=%s", post_code)
 
         class _ThreadsJsonParser(HTMLParser):
             def __init__(self):
@@ -1306,10 +1314,17 @@ def _threads_crawler_fallback(url: str) -> tuple[dict, str, dict] | None:
                 payload = json.loads(body)
             except json.JSONDecodeError:
                 continue
+            wrapper = None
             for node in walk(payload):
-                if node.get("code") == post_code:
+                if node.get("code") != post_code:
+                    continue
+                if wrapper is None:
+                    wrapper = node
+                if any(key in node for key in ("video_versions", "image_versions2", "carousel_media")):
                     post = node
                     break
+            if post is None and wrapper is not None:
+                post = wrapper
             if post is not None:
                 break
 
