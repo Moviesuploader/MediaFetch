@@ -1556,6 +1556,155 @@ def _threads_graphql_fallback(url: str) -> tuple[dict, str, dict] | None:
         return None
 
 
+
+def _threads_browser_video_fallback(url: str) -> tuple[dict, str, dict] | None:
+    """Last-resort Threads video resolver using a real rendered Chromium page."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        logger.warning("Threads browser fallback unavailable: playwright is not installed")
+        return None
+
+    # Resolve /share/ cheaply first so Chromium lands on the exact canonical post.
+    try:
+        resolved = curl_requests.get(
+            url,
+            allow_redirects=True,
+            timeout=20,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"},
+        ) if curl_requests is not None else None
+        resolved_url = str(resolved.url) if resolved is not None else url
+        match = re.search(r"/post/([A-Za-z0-9_-]+)", urlsplit(resolved_url).path)
+        if not match:
+            logger.warning("Threads browser resolver did not reach a post")
+            return None
+        post_code = match.group(1)
+        canonical_url = f"https://www.threads.com{urlsplit(resolved_url).path.rstrip('/')}"
+    except Exception as exc:
+        logger.warning("Threads browser resolver failed error_type=%s error=%s", type(exc).__name__, exc)
+        return None
+
+    browser = None
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                executable_path="/usr/bin/chromium",
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--disable-background-networking",
+                    "--disable-extensions",
+                    "--mute-audio",
+                ],
+            )
+            context = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                ),
+                locale="en-US",
+            )
+            page = context.new_page()
+            candidates: list[str] = []
+
+            def remember(candidate):
+                if not isinstance(candidate, str) or not candidate.startswith(("http://", "https://")):
+                    return
+                low = candidate.lower()
+                host = urlsplit(candidate).netloc.lower()
+                if (
+                    (".mp4" in low or "video" in low)
+                    and ("cdninstagram.com" in host or "fbcdn.net" in host or "scontent" in host)
+                    and candidate not in candidates
+                ):
+                    candidates.append(candidate)
+
+            def on_response(response):
+                try:
+                    ctype = (response.headers.get("content-type") or "").lower()
+                    if ctype.startswith("video/") or ".mp4" in response.url.lower():
+                        remember(response.url)
+                except Exception:
+                    pass
+
+            page.on("response", on_response)
+            page.goto(canonical_url, wait_until="domcontentloaded", timeout=30000)
+            try:
+                page.wait_for_selector("video", timeout=12000)
+            except Exception:
+                pass
+            page.wait_for_timeout(3500)
+
+            dom_urls = page.eval_on_selector_all(
+                "video",
+                """els => els.flatMap(v => [
+                    v.currentSrc || "",
+                    v.src || "",
+                    ...Array.from(v.querySelectorAll("source")).map(s => s.src || "")
+                ]).filter(Boolean)""",
+            )
+            for candidate in dom_urls or []:
+                remember(candidate)
+
+            if not candidates:
+                logger.warning(
+                    "Threads rendered browser found no video code=%s page_url=%s video_elements=%d",
+                    post_code,
+                    urlsplit(page.url).path,
+                    page.locator("video").count(),
+                )
+                context.close()
+                browser.close()
+                browser = None
+                return None
+
+            media_url = candidates[0]
+            headers = {
+                "Referer": "https://www.threads.com/",
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                ),
+            }
+            fmt = {
+                "format_id": "threads-browser-progressive",
+                "url": media_url,
+                "ext": "mp4",
+                "vcodec": "unknown",
+                "acodec": "unknown",
+                "protocol": urlsplit(media_url).scheme,
+                "http_headers": headers,
+            }
+            info = {
+                "id": post_code,
+                "title": f"Threads video {post_code}",
+                "webpage_url": canonical_url,
+                "formats": [fmt],
+                "_mediafetch_direct_video": media_url,
+                "_mediafetch_direct_headers": headers,
+            }
+            logger.info(
+                "Threads rendered browser video recovered code=%s candidates=%d",
+                post_code,
+                len(candidates),
+            )
+            context.close()
+            browser.close()
+            browser = None
+            return info, canonical_url, _base_opts()
+    except Exception as exc:
+        logger.warning("Threads browser fallback failed error_type=%s error=%s", type(exc).__name__, exc)
+        return None
+    finally:
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception:
+                pass
+
+
 def _threads_authenticated_fallback(url: str) -> tuple[dict, str, dict] | None:
     """Resolve Threads with a logged-in Meta session and browser-navigation headers.
 
@@ -1952,6 +2101,12 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
         if fallback:
             return fallback
         fallback = _threads_authenticated_fallback(url)
+        if fallback:
+            return fallback
+        # Some Threads videos are injected only after client-side GraphQL/JS.
+        # Use Chromium only as the final Threads-specific resolver so photo
+        # posts stay on the lightweight data-sjs path.
+        fallback = _threads_browser_video_fallback(url)
         if fallback:
             return fallback
 
