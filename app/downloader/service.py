@@ -270,7 +270,7 @@ def _platform_from_url(url: str) -> str:
         return "facebook"
     if host.endswith(".instagram.com") or host == "instagram.com":
         return "instagram"
-    if host.endswith(".threads.net") or host.endswith(".threads.com"):
+    if host in {"threads.net", "threads.com"} or host.endswith(".threads.net") or host.endswith(".threads.com"):
         return "threads"
     if host.endswith(".pinterest.com") or host in {"pinterest.com", "pin.it"}:
         return "pinterest"
@@ -1189,39 +1189,64 @@ def _resolve_reddit_short_url(url: str) -> str:
 
 
 def _threads_crawler_fallback(url: str) -> tuple[dict, str, dict] | None:
-    """Resolve public Threads share media from crawler-rendered page data."""
+    """Resolve public Threads photos, carousels and videos from rendered page data."""
     if curl_requests is None:
         return None
-    try:
-        response = curl_requests.get(
-            url, allow_redirects=True, timeout=20,
-            headers={"User-Agent": "Googlebot/2.1 (+http://www.google.com/bot.html)",
-                     "Accept": "text/html,application/xhtml+xml"},
-        )
-        if response.status_code >= 400:
-            return None
-        final_url = str(response.url)
-        html = response.text
-        parser = _OpenGraphParser()
-        parser.feed(html)
-        video = parser.values.get("og:video:secure_url") or parser.values.get("og:video:url") or parser.values.get("og:video")
-        image = parser.values.get("og:image")
-        if video:
-            fmt = {"format_id": "threads-crawler-video", "url": video, "ext": "mp4",
-                   "vcodec": "unknown", "acodec": "unknown", "protocol": urlsplit(video).scheme,
-                   "http_headers": {"Referer": final_url}}
-            return {"id": final_url.rstrip("/").split("/")[-1], "title": parser.values.get("og:title") or "Threads video",
-                    "webpage_url": final_url, "thumbnail": image, "formats": [fmt]}, final_url, _base_opts()
-        if image:
-            fmt = {"format_id": "threads-crawler-image", "url": image, "ext": "jpg",
-                   "vcodec": "none", "acodec": "none", "protocol": urlsplit(image).scheme,
-                   "http_headers": {"Referer": final_url}}
-            return {"id": final_url.rstrip("/").split("/")[-1], "title": parser.values.get("og:title") or "Threads photo",
-                    "webpage_url": final_url, "thumbnail": image, "image_url": image, "formats": [fmt]}, final_url, _base_opts()
-    except Exception as exc:
-        logger.warning("Threads crawler fallback failed error_type=%s error=%s", type(exc).__name__, exc)
+    uas = [
+        "Googlebot/2.1 (+http://www.google.com/bot.html)",
+        "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/146.0 Safari/537.36",
+    ]
+    for ua in uas:
+        try:
+            response = curl_requests.get(
+                url, impersonate="chrome", allow_redirects=True, timeout=20,
+                headers={"User-Agent": ua, "Accept": "text/html,application/xhtml+xml",
+                         "Accept-Language": "en-US,en;q=0.9"},
+            )
+            if response.status_code >= 400:
+                logger.warning("Threads page fallback status=%s url=%s", response.status_code, url)
+                continue
+            final_url = str(response.url)
+            html = response.text
+            parser = _OpenGraphParser()
+            parser.feed(html)
+            video_urls = []
+            for v in (parser.values.get("og:video:secure_url"), parser.values.get("og:video:url"), parser.values.get("og:video")):
+                if v and v.startswith(("http://","https://")) and v not in video_urls:
+                    video_urls.append(v)
+            # Threads embeds media CDN URLs in Relay JSON. Decode common JSON escapes.
+            decoded = html.replace(r"\\u0026", "&").replace(r"\\/", "/").replace("&amp;", "&")
+            for v in re.findall(r'https?://[^"<> ]+\\.(?:mp4)(?:\\?[^"<> ]*)?', decoded, flags=re.I):
+                if ("cdninstagram.com" in v or "fbcdn.net" in v) and v not in video_urls:
+                    video_urls.append(v)
+            image_urls = []
+            og = parser.values.get("og:image")
+            if og:
+                image_urls.append(og)
+            for v in re.findall(r'https?://[^"<> ]+(?:cdninstagram\\.com|fbcdn\\.net)[^"<> ]+', decoded, flags=re.I):
+                low=v.lower()
+                if not low.endswith(".mp4") and v not in image_urls:
+                    image_urls.append(v)
+            if video_urls:
+                video=video_urls[0]
+                fmt={"format_id":"threads-page-video","url":video,"ext":"mp4","vcodec":"unknown","acodec":"unknown",
+                     "protocol":urlsplit(video).scheme,"http_headers":{"Referer":final_url,"User-Agent":ua}}
+                return {"id":final_url.rstrip("/").split("/")[-1],"title":parser.values.get("og:title") or "Threads video",
+                        "webpage_url":final_url,"thumbnail":og,"formats":[fmt]},final_url,_base_opts()
+            if image_urls:
+                entries=[]
+                for idx,img in enumerate(image_urls[:10],1):
+                    fmt={"format_id":f"threads-image-{idx}","url":img,"ext":"jpg","vcodec":"none","acodec":"none",
+                         "protocol":urlsplit(img).scheme,"http_headers":{"Referer":final_url,"User-Agent":ua}}
+                    entries.append({"id":f"threads-{idx}","title":parser.values.get("og:title") or "Threads photo",
+                                    "webpage_url":final_url,"image_url":img,"thumbnail":img,"formats":[fmt]})
+                logger.info("Threads page media recovered images=%d",len(entries))
+                return {"id":final_url.rstrip("/").split("/")[-1],"title":parser.values.get("og:title") or "Threads post",
+                        "webpage_url":final_url,"entries":entries,"formats":[]},final_url,_base_opts()
+        except Exception as exc:
+            logger.warning("Threads page fallback failed error_type=%s error=%s",type(exc).__name__,exc)
     return None
-
 
 def _youtube_post_fallback(url: str) -> tuple[dict, str, dict] | None:
     """Recover a public YouTube Community post image from page metadata."""
