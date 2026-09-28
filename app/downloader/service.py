@@ -1188,6 +1188,41 @@ def _resolve_reddit_short_url(url: str) -> str:
     return url
 
 
+def _threads_crawler_fallback(url: str) -> tuple[dict, str, dict] | None:
+    """Resolve public Threads share media from crawler-rendered page data."""
+    if curl_requests is None:
+        return None
+    try:
+        response = curl_requests.get(
+            url, allow_redirects=True, timeout=20,
+            headers={"User-Agent": "Googlebot/2.1 (+http://www.google.com/bot.html)",
+                     "Accept": "text/html,application/xhtml+xml"},
+        )
+        if response.status_code >= 400:
+            return None
+        final_url = str(response.url)
+        html = response.text
+        parser = _OpenGraphParser()
+        parser.feed(html)
+        video = parser.values.get("og:video:secure_url") or parser.values.get("og:video:url") or parser.values.get("og:video")
+        image = parser.values.get("og:image")
+        if video:
+            fmt = {"format_id": "threads-crawler-video", "url": video, "ext": "mp4",
+                   "vcodec": "unknown", "acodec": "unknown", "protocol": urlsplit(video).scheme,
+                   "http_headers": {"Referer": final_url}}
+            return {"id": final_url.rstrip("/").split("/")[-1], "title": parser.values.get("og:title") or "Threads video",
+                    "webpage_url": final_url, "thumbnail": image, "formats": [fmt]}, final_url, _base_opts()
+        if image:
+            fmt = {"format_id": "threads-crawler-image", "url": image, "ext": "jpg",
+                   "vcodec": "none", "acodec": "none", "protocol": urlsplit(image).scheme,
+                   "http_headers": {"Referer": final_url}}
+            return {"id": final_url.rstrip("/").split("/")[-1], "title": parser.values.get("og:title") or "Threads photo",
+                    "webpage_url": final_url, "thumbnail": image, "image_url": image, "formats": [fmt]}, final_url, _base_opts()
+    except Exception as exc:
+        logger.warning("Threads crawler fallback failed error_type=%s error=%s", type(exc).__name__, exc)
+    return None
+
+
 def _youtube_post_fallback(url: str) -> tuple[dict, str, dict] | None:
     """Recover a public YouTube Community post image from page metadata."""
     if "/post/" not in urlsplit(url).path.lower():
@@ -1199,17 +1234,36 @@ def _youtube_post_fallback(url: str) -> tuple[dict, str, dict] | None:
             html = response.read(6 * 1024 * 1024).decode("utf-8", "replace")
         parser = _OpenGraphParser()
         parser.feed(html)
-        image_url = parser.values.get("og:image")
-        if not image_url:
+        og_image = parser.values.get("og:image")
+        # Community multi-image posts expose the remaining attachments in
+        # page JSON even though OpenGraph advertises only the first image.
+        raw_urls = re.findall(
+            r'https?://[^"\\\\ ]+(?:yt3\\.ggpht\\.com|ytimg\\.com)[^"\\\\ ]*',
+            html,
+            flags=re.I,
+        )
+        candidates = []
+        for item in ([og_image] if og_image else []) + raw_urls:
+            if not item:
+                continue
+            item = item.replace(r"\\u0026", "&").replace("&amp;", "&")
+            if item.startswith(("http://", "https://")) and item not in candidates:
+                candidates.append(item)
+        # Prefer post attachment images and avoid avatars/icons.
+        candidates = [u for u in candidates if "yt3.ggpht.com" not in urlsplit(u).netloc.lower()] or candidates
+        if not candidates:
             return None
-        image_url = urljoin(url, image_url)
         post_id = urlsplit(url).path.rstrip("/").split("/")[-1]
-        fmt = {"format_id": "youtube-community-image", "url": image_url, "ext": "jpg",
-               "vcodec": "none", "acodec": "none", "protocol": urlsplit(image_url).scheme,
-               "http_headers": {"User-Agent": ua, "Referer": url}}
+        entries = []
+        for index, image_url in enumerate(candidates[:10], 1):
+            fmt = {"format_id": f"youtube-community-image-{index}", "url": image_url, "ext": "jpg",
+                   "vcodec": "none", "acodec": "none", "protocol": urlsplit(image_url).scheme,
+                   "http_headers": {"User-Agent": ua, "Referer": url}}
+            entries.append({"id": f"{post_id}-{index}", "title": parser.values.get("og:title") or "YouTube Community post",
+                            "webpage_url": url, "thumbnail": image_url, "image_url": image_url, "formats": [fmt]})
+        logger.info("YouTube Community images recovered count=%d", len(entries))
         return {"id": post_id, "title": parser.values.get("og:title") or "YouTube Community post",
-                "webpage_url": url, "thumbnail": image_url, "image_url": image_url,
-                "formats": [fmt]}, url, _base_opts()
+                "webpage_url": url, "entries": entries, "formats": []}, url, _base_opts()
     except Exception as exc:
         logger.warning("YouTube Community fallback failed error_type=%s error=%s", type(exc).__name__, exc)
         return None
@@ -1335,13 +1389,12 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
     """
     platform = _platform_from_url(url)
     if platform == "threads":
-        # Threads share URLs currently confuse yt-dlp because the share token
-        # is not the canonical post shortcode. Public OpenGraph metadata is
-        # both faster and more reliable, so try it before the extractor.
+        # Threads' public share surface serves richer media metadata to link
+        # preview crawlers than to anonymous browser clients.
         for candidate in _url_variants(url):
-            fallback = _meta_public_page_fallback(candidate)
+            fallback = _threads_crawler_fallback(candidate) or _meta_public_page_fallback(candidate)
             if fallback:
-                logger.info("Threads public-page fallback succeeded url=%s", candidate)
+                logger.info("Threads crawler/public fallback succeeded url=%s", candidate)
                 return fallback
 
     if platform == "youtube" and "/post/" in urlsplit(url).path.lower():
@@ -1873,6 +1926,10 @@ def _download_sync(
             # restore download-only options that must survive the merge.
             opts["outtmpl"] = str(Path(output_dir) / "%(title).80s-%(id)s.%(ext)s")
             opts["format"] = selector or "best"
+            if platform == "facebook" and mode != "audio" and _has_video_format(info):
+                # Extraction profiles may otherwise fall back to an audio-only
+                # "best" candidate. Require a video stream for Facebook.
+                opts["format"] = selector or "bv+ba/b[vcodec!=none][ext=mp4]/b[vcodec!=none]"
             opts["noplaylist"] = True
             opts["merge_output_format"] = "mp4"
             opts["max_filesize"] = max_file_mb * 1024 * 1024
