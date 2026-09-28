@@ -1630,11 +1630,22 @@ def _threads_browser_video_fallback(url: str) -> tuple[dict, str, dict] | None:
                         }
                         if ck.expires:
                             item["expires"] = float(ck.expires)
-                        try:
-                            context.add_cookies([item])
-                            added_cookies += 1
-                        except Exception:
-                            pass
+                        targets = [item]
+                        # A Netscape export from instagram.com otherwise leaves
+                        # Chromium completely unauthenticated on threads.com.
+                        # Mirror the same Meta session cookie to Threads; invalid
+                        # cookies are ignored individually.
+                        if "instagram.com" in domain:
+                            for threads_domain in (".threads.com", ".threads.net"):
+                                mirrored = dict(item)
+                                mirrored["domain"] = threads_domain
+                                targets.append(mirrored)
+                        for target in targets:
+                            try:
+                                context.add_cookies([target])
+                                added_cookies += 1
+                            except Exception:
+                                pass
                 except Exception as cookie_exc:
                     logger.warning("Threads browser cookie load failed error_type=%s", type(cookie_exc).__name__)
             logger.info("Threads browser session cookies loaded count=%d", added_cookies)
@@ -1662,6 +1673,12 @@ def _threads_browser_video_fallback(url: str) -> tuple[dict, str, dict] | None:
                     pass
 
             page.on("response", on_response)
+            # First establish the Threads origin so mirrored Meta cookies are
+            # active before navigating to the signed permalink.
+            try:
+                page.goto("https://www.threads.com/", wait_until="domcontentloaded", timeout=20000)
+            except Exception:
+                pass
             try:
                 page.goto(canonical_url, wait_until="networkidle", timeout=60000)
             except Exception as nav_exc:
