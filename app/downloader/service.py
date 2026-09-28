@@ -2784,7 +2784,11 @@ def _download_images(
         safe_title = "".join(
             ch if ch.isalnum() or ch in "._-" else "_" for ch in str(title)
         )[:60]
-        target = Path(output_dir) / f"{safe_title}-{stem}"
+        # Always include the carousel position in the filename. Some Meta
+        # sidecar payloads reuse the parent media id for every child; without
+        # the index each download overwrote the same file and the returned
+        # path list therefore pointed to one repeated final image.
+        target = Path(output_dir) / f"{safe_title}-{index:02d}-{stem}"
         image_headers = (thumbnail or {}).get("http_headers") or entry.get("http_headers")
         if direct_url:
             for fmt in entry.get("formats") or []:
