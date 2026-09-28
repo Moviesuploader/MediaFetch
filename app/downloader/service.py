@@ -1361,6 +1361,112 @@ def _threads_crawler_fallback(url: str) -> tuple[dict, str, dict] | None:
         return None
 
 
+def _threads_authenticated_fallback(url: str) -> tuple[dict, str, dict] | None:
+    """Retry Threads with the configured logged-in Instagram/Meta web session."""
+    if curl_requests is None:
+        return None
+    cookie_file = _materialize_instagram_cookie_file()
+    if not cookie_file or not cookie_file.is_file():
+        logger.info("Threads authenticated fallback unavailable: Instagram cookie jar not configured")
+        return None
+    try:
+        jar = http.cookiejar.MozillaCookieJar(str(cookie_file))
+        jar.load(ignore_discard=True, ignore_expires=True)
+        cookies = {cookie.name: cookie.value for cookie in jar}
+        ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+              "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36")
+        response = curl_requests.get(
+            url, impersonate="chrome", allow_redirects=True, timeout=20, cookies=cookies,
+            headers={
+                "User-Agent": ua,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none", "Sec-Fetch-User": "?1",
+                "Upgrade-Insecure-Requests": "1",
+            },
+        )
+        final_url = str(response.url)
+        if response.status_code >= 400 or "/login" in urlsplit(final_url).path.lower():
+            logger.warning("Threads authenticated page unavailable status=%s final_host=%s",
+                           response.status_code, urlsplit(final_url).netloc)
+            return None
+        match = re.search(r"/post/([A-Za-z0-9_-]+)", urlsplit(final_url).path)
+        if not match:
+            return None
+        post_code = match.group(1)
+
+        class _P(HTMLParser):
+            def __init__(self):
+                super().__init__(); self.attrs=None; self.body=None; self.scripts=[]
+            def handle_starttag(self, tag, attrs):
+                if tag == "script": self.attrs=dict(attrs); self.body=[]
+            def handle_data(self, data):
+                if self.body is not None: self.body.append(data)
+            def handle_endtag(self, tag):
+                if tag == "script" and self.body is not None:
+                    self.scripts.append((self.attrs or {}, "".join(self.body))); self.attrs=None; self.body=None
+
+        def walk(v):
+            if isinstance(v, dict):
+                yield v
+                for child in v.values(): yield from walk(child)
+            elif isinstance(v, list):
+                for child in v: yield from walk(child)
+
+        parser=_P(); parser.feed(response.text)
+        target=None; parsed=0
+        for attrs, body in parser.scripts:
+            if attrs.get("type") != "application/json" or not body.lstrip().startswith("{"): continue
+            try: payload=json.loads(body)
+            except json.JSONDecodeError: continue
+            parsed += 1
+            for node in walk(payload):
+                if node.get("code") == post_code:
+                    target=node; break
+            if target is not None: break
+        if target is None:
+            logger.warning("Threads authenticated exact post missing code=%s parsed_json=%d", post_code, parsed)
+            return None
+
+        def has_media(n):
+            return isinstance(n,dict) and bool(n.get("carousel_media") or n.get("video_versions") or n.get("image_versions2"))
+        source=target
+        if not has_media(source):
+            app=target.get("text_post_app_info")
+            if isinstance(app,dict):
+                linked=app.get("linked_inline_media")
+                if has_media(linked): source=linked
+                else:
+                    share=app.get("share_info")
+                    quoted=share.get("quoted_attachment_post") if isinstance(share,dict) else None
+                    if has_media(quoted): source=quoted
+        items=source.get("carousel_media") or [source]
+        entries=[]
+        for idx,item in enumerate(items,1):
+            if not isinstance(item,dict): continue
+            vids=[x for x in (item.get("video_versions") or []) if isinstance(x,dict) and isinstance(x.get("url"),str)]
+            if vids:
+                v=max(vids,key=lambda x:int(x.get("width") or 0)*int(x.get("height") or 0))
+                media_url=v["url"]
+                fmt={"format_id":f"threads-auth-video-{idx}","url":media_url,"ext":"mp4",
+                     "vcodec":"unknown","acodec":"unknown","width":v.get("width"),"height":v.get("height"),
+                     "protocol":urlsplit(media_url).scheme,
+                     "http_headers":{"Referer":final_url,"User-Agent":ua}}
+                entries.append({"id":f"{post_code}_{idx}","title":f"Threads video {post_code}",
+                                "webpage_url":final_url,"formats":[fmt]})
+        if not entries:
+            logger.warning("Threads authenticated post has no video code=%s",post_code)
+            return None
+        logger.info("Threads authenticated video recovered code=%s media=%d",post_code,len(entries))
+        if len(entries)==1: return entries[0],final_url,_base_opts()
+        return {"id":post_code,"title":f"Threads post {post_code}","webpage_url":final_url,
+                "entries":entries,"formats":[]},final_url,_base_opts()
+    except Exception as exc:
+        logger.warning("Threads authenticated fallback failed error_type=%s error=%s",type(exc).__name__,exc)
+        return None
+
+
 def _threads_api_fallback(url: str) -> tuple[dict, str, dict] | None:
     """Fallback used by active open-source Threads downloaders when page JSON omits videos."""
     if curl_requests is None:
@@ -1576,6 +1682,9 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
                 return fallback
         # Current public video posts can omit their target node from crawler JSON.
         # Use the same dedicated Threads API fallback used by active downloader projects.
+        fallback = _threads_authenticated_fallback(url)
+        if fallback:
+            return fallback
         fallback = _threads_api_fallback(url)
         if fallback:
             return fallback
