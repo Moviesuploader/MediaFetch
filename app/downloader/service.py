@@ -1601,11 +1601,43 @@ def _threads_browser_video_fallback(url: str) -> tuple[dict, str, dict] | None:
             )
             context = browser.new_context(
                 user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                 ),
                 locale="en-US",
+                viewport={"width": 1280, "height": 900},
             )
+
+            # Threads video is frequently injected only for an authenticated
+            # browser session. Reuse the existing Instagram/Meta Netscape jar,
+            # one cookie at a time so one malformed entry cannot abort login.
+            cookie_file = _materialize_instagram_cookie_file()
+            added_cookies = 0
+            if cookie_file and cookie_file.is_file():
+                try:
+                    jar = http.cookiejar.MozillaCookieJar(str(cookie_file))
+                    jar.load(ignore_discard=True, ignore_expires=True)
+                    for ck in jar:
+                        domain = ck.domain or ".instagram.com"
+                        # Instagram session cookies are accepted by the shared
+                        # Meta auth surface; keep their original domain.
+                        item = {
+                            "name": ck.name,
+                            "value": ck.value,
+                            "domain": domain,
+                            "path": ck.path or "/",
+                            "secure": bool(ck.secure),
+                        }
+                        if ck.expires:
+                            item["expires"] = float(ck.expires)
+                        try:
+                            context.add_cookies([item])
+                            added_cookies += 1
+                        except Exception:
+                            pass
+                except Exception as cookie_exc:
+                    logger.warning("Threads browser cookie load failed error_type=%s", type(cookie_exc).__name__)
+            logger.info("Threads browser session cookies loaded count=%d", added_cookies)
             page = context.new_page()
             candidates: list[str] = []
 
@@ -1630,12 +1662,27 @@ def _threads_browser_video_fallback(url: str) -> tuple[dict, str, dict] | None:
                     pass
 
             page.on("response", on_response)
-            page.goto(canonical_url, wait_until="commit", timeout=15000)
             try:
-                page.wait_for_selector("video", timeout=12000)
-            except Exception:
-                pass
-            page.wait_for_timeout(3500)
+                page.goto(canonical_url, wait_until="networkidle", timeout=60000)
+            except Exception as nav_exc:
+                logger.info("Threads browser navigation incomplete code=%s error_type=%s", post_code, type(nav_exc).__name__)
+            page.wait_for_timeout(3000)
+
+            videos = page.locator("video")
+            video_count = videos.count()
+            for idx in range(video_count):
+                try:
+                    video = videos.nth(idx)
+                    remember(video.get_attribute("src"))
+                    remember(video.evaluate("(v) => v.currentSrc || ''"))
+                    poster = video.get_attribute("poster")
+                    try:
+                        video.click(timeout=1500)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            page.wait_for_timeout(2500)
 
             dom_urls = page.eval_on_selector_all(
                 "video",
