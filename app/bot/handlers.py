@@ -34,8 +34,8 @@ SUPPORTED_TEXT = (
 
 
 def _cache_key(url: str, mode: str) -> str:
-    # v3 also invalidates carousel entries created while child images could overwrite one another.
-    return hashlib.sha256(f"v3|{url}|{mode}".encode("utf-8")).hexdigest()
+    # v4 invalidates Instagram carousel cache created from cover/thumbnail fallbacks.
+    return hashlib.sha256(f"v4|{url}|{mode}".encode("utf-8")).hexdigest()
 
 
 def _is_admin(user_id: int) -> bool:
