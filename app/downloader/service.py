@@ -951,6 +951,178 @@ def _meta_public_page_fallback(url: str) -> tuple[dict, str, dict] | None:
 
 
 
+def _instagram_api_photo_fallback(url: str) -> tuple[dict, str, dict] | None:
+    """Resolve Instagram photo/carousel posts from the web media-info API.
+
+    Unlike OpenGraph, this endpoint exposes every carousel child and each
+    child's image_versions2 candidates, so we can keep the original aspect
+    ratio and choose the largest available image instead of repeating the
+    post preview thumbnail.
+    """
+    if curl_requests is None:
+        return None
+
+    match = re.search(r"/p/([A-Za-z0-9_-]+)", urlsplit(url).path)
+    if not match:
+        return None
+    shortcode = match.group(1)
+    canonical_url = f"https://www.instagram.com/p/{shortcode}/"
+    api_url = f"https://www.instagram.com/api/v1/media/shortcode/{shortcode}/info/"
+    ua = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    )
+    headers = {
+        "User-Agent": ua,
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": canonical_url,
+        "X-IG-App-ID": "936619743392459",
+        "X-Requested-With": "XMLHttpRequest",
+    }
+
+    cookie_file = _materialize_instagram_cookie_file()
+    cookies: dict[str, str] = {}
+    if cookie_file and cookie_file.is_file():
+        try:
+            jar = http.cookiejar.MozillaCookieJar(str(cookie_file))
+            jar.load(ignore_discard=True, ignore_expires=True)
+            cookies = {cookie.name: cookie.value for cookie in jar}
+        except Exception as exc:
+            logger.warning(
+                "Instagram API cookie load failed error_type=%s",
+                type(exc).__name__,
+            )
+
+    # Try the configured authenticated session first when it contains a real
+    # Instagram sessionid. If it is stale/rate-limited, retry anonymously.
+    attempts = [cookies] if cookies.get("sessionid") else []
+    attempts.append({})
+    seen_attempts: set[tuple[tuple[str, str], ...]] = set()
+
+    for request_cookies in attempts:
+        fingerprint = tuple(sorted(request_cookies.items()))
+        if fingerprint in seen_attempts:
+            continue
+        seen_attempts.add(fingerprint)
+        try:
+            response = curl_requests.get(
+                api_url,
+                impersonate="chrome",
+                allow_redirects=False,
+                timeout=25,
+                headers=headers,
+                cookies=request_cookies or None,
+            )
+            if response.status_code != 200:
+                logger.info(
+                    "Instagram media-info API unavailable shortcode=%s status=%s authenticated=%s",
+                    shortcode,
+                    response.status_code,
+                    bool(request_cookies.get("sessionid")),
+                )
+                continue
+            payload = response.json()
+            items = payload.get("items") or []
+            post = items[0] if items and isinstance(items[0], dict) else None
+            if not post:
+                continue
+
+            caption = post.get("caption")
+            title = (
+                (caption.get("text") if isinstance(caption, dict) else "")
+                or f"Instagram post {shortcode}"
+            ).strip().split("\n", 1)[0][:72]
+            media_items = post.get("carousel_media") or [post]
+            entries: list[dict] = []
+            seen_urls: set[str] = set()
+
+            for index, item in enumerate(media_items, 1):
+                if not isinstance(item, dict):
+                    continue
+                versions = item.get("image_versions2")
+                candidates = versions.get("candidates") if isinstance(versions, dict) else []
+                candidates = [
+                    candidate for candidate in (candidates or [])
+                    if isinstance(candidate, dict)
+                    and isinstance(candidate.get("url"), str)
+                    and candidate["url"].startswith(("http://", "https://"))
+                ]
+                if not candidates:
+                    continue
+                image = max(
+                    candidates,
+                    key=lambda candidate: (
+                        int(candidate.get("width") or 0) * int(candidate.get("height") or 0),
+                        int(candidate.get("width") or 0) + int(candidate.get("height") or 0),
+                    ),
+                )
+                media_url = image["url"]
+                if media_url in seen_urls:
+                    logger.warning(
+                        "Instagram carousel duplicate CDN URL skipped shortcode=%s index=%d",
+                        shortcode,
+                        index,
+                    )
+                    continue
+                seen_urls.add(media_url)
+                child_id = str(item.get("pk") or item.get("id") or f"{shortcode}_{index}")
+                media_headers = {"User-Agent": ua, "Referer": canonical_url}
+                fmt = {
+                    "format_id": f"instagram-api-image-{index}",
+                    "url": media_url,
+                    "ext": "jpg",
+                    "vcodec": "none",
+                    "acodec": "none",
+                    "width": image.get("width"),
+                    "height": image.get("height"),
+                    "protocol": urlsplit(media_url).scheme,
+                    "http_headers": media_headers,
+                }
+                entries.append({
+                    "id": child_id,
+                    "title": title,
+                    "webpage_url": canonical_url,
+                    "image_url": media_url,
+                    "thumbnail": media_url,
+                    "thumbnails": [{
+                        "url": media_url,
+                        "width": image.get("width"),
+                        "height": image.get("height"),
+                        "http_headers": media_headers,
+                    }],
+                    "formats": [fmt],
+                    "http_headers": media_headers,
+                })
+
+            if not entries:
+                continue
+            logger.info(
+                "Instagram HD media-info recovered shortcode=%s photos=%d carousel=%s",
+                shortcode,
+                len(entries),
+                len(media_items) > 1,
+            )
+            if len(entries) == 1:
+                return entries[0], canonical_url, _base_opts()
+            return {
+                "id": shortcode,
+                "title": title,
+                "webpage_url": canonical_url,
+                "entries": entries,
+                "formats": [],
+            }, canonical_url, _base_opts()
+        except Exception as exc:
+            logger.warning(
+                "Instagram media-info API attempt failed shortcode=%s authenticated=%s error_type=%s error=%s",
+                shortcode,
+                bool(request_cookies.get("sessionid")),
+                type(exc).__name__,
+                exc,
+            )
+    return None
+
+
 def _instagram_web_fallback(url: str) -> tuple[dict, str, dict] | None:
     """Recover public Instagram video from page metadata when its API path breaks."""
     try:
@@ -2193,6 +2365,14 @@ def _reddit_json_fallback(url: str) -> tuple[dict, str, dict] | None:
 
 def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
     last_error: Exception | None = None
+
+    # Photo/carousel posts need child-specific media metadata. Do this before
+    # yt-dlp/OpenGraph: OpenGraph exposes only the cover image and can make a
+    # carousel look like the same low-resolution photo repeated.
+    if _platform_from_url(url) == "instagram" and re.search(r"/p/[A-Za-z0-9_-]+", urlsplit(url).path):
+        instagram_photo = _instagram_api_photo_fallback(url)
+        if instagram_photo:
+            return instagram_photo
 
     for candidate in _url_variants(url):
         for profile in _extract_profiles(candidate):
