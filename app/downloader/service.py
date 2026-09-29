@@ -951,174 +951,206 @@ def _meta_public_page_fallback(url: str) -> tuple[dict, str, dict] | None:
 
 
 
-def _instagram_api_photo_fallback(url: str) -> tuple[dict, str, dict] | None:
-    """Resolve Instagram photo/carousel posts from the web media-info API.
+def _instagram_structured_fallback(url: str) -> tuple[dict, str, dict] | None:
+    """Resolve public Instagram posts with the current web GraphQL document.
 
-    Unlike OpenGraph, this endpoint exposes every carousel child and each
-    child's image_versions2 candidates, so we can keep the original aspect
-    ratio and choose the largest available image instead of repeating the
-    post preview thumbnail.
+    This follows Instaloader's current post-metadata route. It preserves each
+    sidecar child separately and uses image_versions2/video_versions instead
+    of the single OpenGraph cover image.
     """
     if curl_requests is None:
         return None
 
-    match = re.search(r"/p/([A-Za-z0-9_-]+)", urlsplit(url).path)
+    match = re.search(r"/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)", urlsplit(url).path)
     if not match:
         return None
     shortcode = match.group(1)
     canonical_url = f"https://www.instagram.com/p/{shortcode}/"
-    api_url = f"https://www.instagram.com/api/v1/media/shortcode/{shortcode}/info/"
     ua = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     )
-    headers = {
-        "User-Agent": ua,
-        "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": canonical_url,
-        "X-IG-App-ID": "936619743392459",
-        "X-Requested-With": "XMLHttpRequest",
-    }
 
-    cookie_file = _materialize_instagram_cookie_file()
     cookies: dict[str, str] = {}
+    cookie_file = _materialize_instagram_cookie_file()
     if cookie_file and cookie_file.is_file():
         try:
             jar = http.cookiejar.MozillaCookieJar(str(cookie_file))
             jar.load(ignore_discard=True, ignore_expires=True)
             cookies = {cookie.name: cookie.value for cookie in jar}
         except Exception as exc:
-            logger.warning(
-                "Instagram API cookie load failed error_type=%s",
-                type(exc).__name__,
-            )
+            logger.warning("Instagram structured cookie load failed error_type=%s", type(exc).__name__)
 
-    # Try the configured authenticated session first when it contains a real
-    # Instagram sessionid. If it is stale/rate-limited, retry anonymously.
-    attempts = [cookies] if cookies.get("sessionid") else []
-    attempts.append({})
-    seen_attempts: set[tuple[tuple[str, str], ...]] = set()
+    def best(items: list | None) -> dict | None:
+        valid = [
+            item for item in (items or [])
+            if isinstance(item, dict)
+            and isinstance(item.get("url"), str)
+            and item["url"].startswith(("http://", "https://"))
+        ]
+        return max(
+            valid,
+            key=lambda item: (
+                int(item.get("width") or 0) * int(item.get("height") or 0),
+                int(item.get("width") or 0) + int(item.get("height") or 0),
+            ),
+            default=None,
+        )
 
-    for request_cookies in attempts:
-        fingerprint = tuple(sorted(request_cookies.items()))
-        if fingerprint in seen_attempts:
-            continue
-        seen_attempts.add(fingerprint)
-        try:
-            response = curl_requests.get(
-                api_url,
-                impersonate="chrome",
-                allow_redirects=False,
-                timeout=25,
-                headers=headers,
-                cookies=request_cookies or None,
-            )
-            if response.status_code != 200:
-                logger.info(
-                    "Instagram media-info API unavailable shortcode=%s status=%s authenticated=%s",
-                    shortcode,
-                    response.status_code,
-                    bool(request_cookies.get("sessionid")),
-                )
+    def build(post: dict) -> tuple[dict, str, dict] | None:
+        caption = post.get("caption")
+        title = (
+            (caption.get("text") if isinstance(caption, dict) else "")
+            or f"Instagram post {shortcode}"
+        ).strip().split("\n", 1)[0][:72]
+        media_items = post.get("carousel_media") or [post]
+        entries: list[dict] = []
+        seen_media: set[str] = set()
+
+        for index, item in enumerate(media_items, 1):
+            if not isinstance(item, dict):
                 continue
-            payload = response.json()
-            items = payload.get("items") or []
-            post = items[0] if items and isinstance(items[0], dict) else None
-            if not post:
+            video = best(item.get("video_versions"))
+            versions = item.get("image_versions2")
+            image = best(versions.get("candidates") if isinstance(versions, dict) else None)
+            media_headers = {"User-Agent": ua, "Referer": canonical_url}
+            child_id = str(item.get("pk") or item.get("id") or item.get("code") or f"{shortcode}_{index}")
+
+            if video:
+                media_url = video["url"]
+                if media_url in seen_media:
+                    continue
+                seen_media.add(media_url)
+                fmt = {
+                    "format_id": f"instagram-structured-video-{index}",
+                    "url": media_url, "ext": "mp4",
+                    "vcodec": "unknown", "acodec": "unknown",
+                    "width": video.get("width"), "height": video.get("height"),
+                    "protocol": urlsplit(media_url).scheme,
+                    "http_headers": media_headers,
+                }
+                entry = {
+                    "id": child_id, "title": title, "webpage_url": canonical_url,
+                    "formats": [fmt], "http_headers": media_headers,
+                }
+                if image:
+                    entry["thumbnail"] = image["url"]
+                entries.append(entry)
                 continue
 
-            caption = post.get("caption")
-            title = (
-                (caption.get("text") if isinstance(caption, dict) else "")
-                or f"Instagram post {shortcode}"
-            ).strip().split("\n", 1)[0][:72]
-            media_items = post.get("carousel_media") or [post]
-            entries: list[dict] = []
-            seen_urls: set[str] = set()
-
-            for index, item in enumerate(media_items, 1):
-                if not isinstance(item, dict):
-                    continue
-                versions = item.get("image_versions2")
-                candidates = versions.get("candidates") if isinstance(versions, dict) else []
-                candidates = [
-                    candidate for candidate in (candidates or [])
-                    if isinstance(candidate, dict)
-                    and isinstance(candidate.get("url"), str)
-                    and candidate["url"].startswith(("http://", "https://"))
-                ]
-                if not candidates:
-                    continue
-                image = max(
-                    candidates,
-                    key=lambda candidate: (
-                        int(candidate.get("width") or 0) * int(candidate.get("height") or 0),
-                        int(candidate.get("width") or 0) + int(candidate.get("height") or 0),
-                    ),
-                )
+            if image:
                 media_url = image["url"]
-                if media_url in seen_urls:
+                if media_url in seen_media:
                     logger.warning(
-                        "Instagram carousel duplicate CDN URL skipped shortcode=%s index=%d",
-                        shortcode,
-                        index,
+                        "Instagram duplicate sidecar media skipped shortcode=%s index=%d",
+                        shortcode, index,
                     )
                     continue
-                seen_urls.add(media_url)
-                child_id = str(item.get("pk") or item.get("id") or f"{shortcode}_{index}")
-                media_headers = {"User-Agent": ua, "Referer": canonical_url}
+                seen_media.add(media_url)
                 fmt = {
-                    "format_id": f"instagram-api-image-{index}",
-                    "url": media_url,
-                    "ext": "jpg",
-                    "vcodec": "none",
-                    "acodec": "none",
-                    "width": image.get("width"),
-                    "height": image.get("height"),
+                    "format_id": f"instagram-structured-image-{index}",
+                    "url": media_url, "ext": "jpg",
+                    "vcodec": "none", "acodec": "none",
+                    "width": image.get("width"), "height": image.get("height"),
                     "protocol": urlsplit(media_url).scheme,
                     "http_headers": media_headers,
                 }
                 entries.append({
-                    "id": child_id,
-                    "title": title,
-                    "webpage_url": canonical_url,
-                    "image_url": media_url,
-                    "thumbnail": media_url,
+                    "id": child_id, "title": title, "webpage_url": canonical_url,
+                    "image_url": media_url, "thumbnail": media_url,
                     "thumbnails": [{
-                        "url": media_url,
-                        "width": image.get("width"),
-                        "height": image.get("height"),
-                        "http_headers": media_headers,
+                        "url": media_url, "width": image.get("width"),
+                        "height": image.get("height"), "http_headers": media_headers,
                     }],
-                    "formats": [fmt],
-                    "http_headers": media_headers,
+                    "formats": [fmt], "http_headers": media_headers,
                 })
 
-            if not entries:
-                continue
-            logger.info(
-                "Instagram HD media-info recovered shortcode=%s photos=%d carousel=%s",
-                shortcode,
-                len(entries),
-                len(media_items) > 1,
+        if not entries:
+            return None
+        logger.info(
+            "Instagram structured media recovered shortcode=%s items=%d carousel=%s",
+            shortcode, len(entries), len(media_items) > 1,
+        )
+        if len(entries) == 1:
+            return entries[0], canonical_url, _base_opts()
+        return {
+            "id": shortcode, "title": title, "webpage_url": canonical_url,
+            "entries": entries, "formats": [],
+        }, canonical_url, _base_opts()
+
+    # Instaloader currently obtains Post metadata with this doc_id and reads
+    # data.xdt_api__v1__media__shortcode__web_info.items[0].
+    attempts = [cookies] if cookies.get("sessionid") else []
+    attempts.append({})
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    for request_cookies in attempts:
+        fingerprint = tuple(sorted(request_cookies.items()))
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        try:
+            session = curl_requests.Session(impersonate="chrome")
+            if request_cookies:
+                session.cookies.update(request_cookies)
+
+            # Establish the web session first so csrftoken/mid and the request
+            # fingerprint belong to the same session as the GraphQL POST.
+            home = session.get(
+                "https://www.instagram.com/",
+                allow_redirects=True,
+                timeout=20,
+                headers={
+                    "User-Agent": ua,
+                    "Accept": "text/html,application/xhtml+xml",
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
             )
-            if len(entries) == 1:
-                return entries[0], canonical_url, _base_opts()
-            return {
-                "id": shortcode,
-                "title": title,
-                "webpage_url": canonical_url,
-                "entries": entries,
-                "formats": [],
-            }, canonical_url, _base_opts()
+            csrf = session.cookies.get("csrftoken") or request_cookies.get("csrftoken") or ""
+            variables = json.dumps({
+                "shortcode": shortcode,
+                "__relay_internal__pv__PolarisAIGMMediaWebLabelEnabledrelayprovider": False,
+            }, separators=(",", ":"))
+            gql = session.post(
+                "https://www.instagram.com/graphql/query",
+                allow_redirects=False,
+                timeout=25,
+                headers={
+                    "User-Agent": ua,
+                    "Accept": "*/*",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Referer": canonical_url,
+                    "X-CSRFToken": csrf,
+                    "X-Requested-With": "XMLHttpRequest",
+                },
+                data={
+                    "variables": variables,
+                    "doc_id": "27128499623469141",
+                    "server_timestamps": "true",
+                },
+            )
+            if gql.status_code != 200:
+                logger.info(
+                    "Instagram structured GraphQL unavailable shortcode=%s status=%s authenticated=%s",
+                    shortcode, gql.status_code, bool(request_cookies.get("sessionid")),
+                )
+                continue
+            payload = gql.json()
+            web_info = (payload.get("data") or {}).get("xdt_api__v1__media__shortcode__web_info") or {}
+            items = web_info.get("items") or []
+            post = items[0] if items and isinstance(items[0], dict) else None
+            if post:
+                result = build(post)
+                if result:
+                    return result
+            logger.info(
+                "Instagram structured GraphQL empty shortcode=%s authenticated=%s",
+                shortcode, bool(request_cookies.get("sessionid")),
+            )
         except Exception as exc:
             logger.warning(
-                "Instagram media-info API attempt failed shortcode=%s authenticated=%s error_type=%s error=%s",
-                shortcode,
-                bool(request_cookies.get("sessionid")),
-                type(exc).__name__,
-                exc,
+                "Instagram structured GraphQL failed shortcode=%s authenticated=%s error_type=%s error=%s",
+                shortcode, bool(request_cookies.get("sessionid")),
+                type(exc).__name__, exc,
             )
     return None
 
@@ -2370,7 +2402,7 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
     # yt-dlp/OpenGraph: OpenGraph exposes only the cover image and can make a
     # carousel look like the same low-resolution photo repeated.
     if _platform_from_url(url) == "instagram" and re.search(r"/p/[A-Za-z0-9_-]+", urlsplit(url).path):
-        instagram_photo = _instagram_api_photo_fallback(url)
+        instagram_photo = _instagram_structured_fallback(url)
         if instagram_photo:
             return instagram_photo
 
