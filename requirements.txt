@@ -11,3 +11,4 @@ pymongo>=4.8,<5
 Pillow>=10.4,<12
 playwright>=1.55,<2
 pyrofork>=2.3.69,<3
+tgcrypto>=1.2.5,<2
