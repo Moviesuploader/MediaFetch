@@ -93,7 +93,7 @@ async def _render_home(message, edit: bool = True) -> None:
         f"⬇️ Task limit: <b>{task_limit}</b> concurrent\n"
         f"📥 Dump: <code>{channels.get('dump') or 'Not configured'}</code>\n"
         f"🔗 Links log: <code>{channels.get('links') or 'Not configured'}</code>\n\n"
-        f"🆓 Free: <b>{limits['free']} MB</b> • 💎 Premium: <b>{limits['premium']} MB</b> • 👑 Admin: <b>{limits['admin']} MB</b>"
+        f"🆓 Free: <b>{limits['free']} MB</b> • 🥉 Bronze: <b>{limits['bronze']} MB</b> • 💎 Platinum: <b>{limits['platinum']} MB</b> • 💎 Diamond: <b>{limits['diamond']} MB</b> • 👑 Admin/Owner: <b>Unlimited</b>"
     )
     if edit:
         await message.edit_text(text, parse_mode="HTML", reply_markup=_main_keyboard())
@@ -375,8 +375,8 @@ async def revoke_premium(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if len(context.args) != 1 or not context.args[0].isdigit():
         await update.message.reply_text("Usage: /revoke USER_ID")
         return
-    await asyncio.to_thread(storage.set_premium, int(context.args[0]), -1)
-    await update.message.reply_text("✅ Premium revoked.")
+    await asyncio.to_thread(storage.set_plan, int(context.args[0]), "free", 0)
+    await update.message.reply_text("✅ Paid plan revoked; user is back on Free.")
 
 
 async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
