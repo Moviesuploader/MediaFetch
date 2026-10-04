@@ -357,9 +357,10 @@ def _extract_profiles(url: str) -> list[dict]:
         )
         for clients in youtube_clients:
             youtube_profile = _apply_cookie_policy(_base_opts(), url)
-            youtube_profile["extractor_args"] = {
-                "youtube": {"player_client": clients},
-            }
+            youtube_args = {"player_client": clients}
+            if clients in (["default", "web_safari"], ["default", "mweb"]):
+                youtube_args["fetch_pot"] = ["always"]
+            youtube_profile["extractor_args"] = {"youtube": youtube_args}
             if settings.youtube_pot_provider_url:
                 youtube_profile["extractor_args"]["youtubepot-bgutilhttp"] = {
                     "base_url": settings.youtube_pot_provider_url.rstrip("/")
