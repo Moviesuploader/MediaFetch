@@ -51,6 +51,7 @@ def create_payment(user_id: int, plan: str, utr: str) -> dict[str, Any]:
         amount=amount,
         currency=cfg["currency"],
         utr=utr,
+        duration_days=int(cfg["duration_days"]),
     )
 
 
