@@ -77,8 +77,11 @@ class Settings(BaseSettings):
     # Persistence and service controls.
     mongodb_uri: str = ""
     mongodb_db: str = "mediafetch"
+    # Comma-separated Telegram user IDs with admin access.
     admin_ids: str = ""
-    # Owner-only admin panel. If empty, the first ADMIN_IDS entry is owner.
+    # Separate Telegram user ID for the real owner. OWNER_ID has owner-only access;
+    # ADMIN_IDS can contain different people for admin-level access.
+    # Kept empty by default so deployments must explicitly configure the owner.
     owner_id: str = ""
     free_daily_limit: int = 10
     premium_daily_limit: int = 100
