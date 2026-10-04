@@ -17,6 +17,7 @@ from app.core.config import settings
 from app.bot.admin import admin_has_pending_action, admin_message_router
 from app.core.rate_limit import UserRateLimiter
 from app.core.storage import storage
+from app.core.payments import PLANS, PLAN_LABELS, create_payment, payment_config, valid_utr
 from app.bot.mtproto import LargeUploadError, mtproto_uploader
 from app.downloader.detector import detect_platform
 from app.downloader.service import DownloadError, MediaInfo, download_media, get_media_info
@@ -25,6 +26,7 @@ URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 _ACTIVE_USERS: set[int] = set()
 _ACTIVE_LOCK = asyncio.Lock()
 _PENDING_REQUESTS: dict[int, tuple[str, str, str, MediaInfo | None]] = {}
+_PENDING_PAYMENT_PLAN: dict[int, str] = {}
 _PENDING_LOCK = asyncio.Lock()
 class _DynamicDownloadLimiter:
     def __init__(self) -> None:
@@ -495,6 +497,78 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         state = "✅" if item.get("success") else "❌"
         lines.append(f"{index}. {state} <b>{platform}</b> • {mode} • {title}")
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+async def plans_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    cfg = payment_config()
+    lines = ["💳 <b>MediaFetch Plans</b>", "", "Choose a plan to pay via UPI:"]
+    buttons = []
+    for plan in PLANS:
+        price = cfg["prices"][plan]
+        lines.append(f"{PLAN_LABELS[plan]} — <b>{price} {cfg['currency']}</b>" if price > 0 else f"{PLAN_LABELS[plan]} — <b>Not configured</b>")
+        if price > 0:
+            buttons.append([InlineKeyboardButton(f"{PLAN_LABELS[plan]} • {price} {cfg['currency']}", callback_data=f"mfp:buy:{plan}")])
+    lines.append(f"\n⏳ Duration: <b>{cfg['duration_days']} days</b>")
+    if not cfg["upi_id"]:
+        lines.append("\n⚠️ UPI payment is currently not configured.")
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons) if buttons else None)
+
+
+async def payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not query.message or not update.effective_user:
+        return
+    await query.answer()
+    parts = (query.data or "").split(":")
+    if len(parts) != 3 or parts[0] != "mfp" or parts[1] != "buy":
+        return
+    plan = parts[2].lower()
+    cfg = payment_config()
+    if plan not in PLANS or not cfg["upi_id"] or int(cfg["prices"].get(plan, 0)) <= 0:
+        await query.edit_message_text("⚠️ This payment plan is not configured yet.")
+        return
+    user_id = update.effective_user.id
+    _PENDING_PAYMENT_PLAN[user_id] = plan
+    text = (
+        f"💳 <b>{PLAN_LABELS[plan]} Payment</b>\n\n"
+        f"💰 Amount: <b>{cfg['prices'][plan]} {cfg['currency']}</b>\n"
+        f"⏳ Duration: <b>{cfg['duration_days']} days</b>\n"
+        f"📱 UPI ID: <code>{html.escape(cfg['upi_id'])}</code>\n\n"
+        "1️⃣ UPI app se exact amount pay karo.\n"
+        "2️⃣ Payment ke baad UTR / transaction reference copy karo.\n"
+        "3️⃣ Neeche sirf UTR bhejo.\n\n"
+        "⚠️ UTR submit karna payment proof nahi hai. Plan owner verification ke baad hi activate hoga."
+    )
+    await query.edit_message_text(text, parse_mode="HTML")
+
+
+async def _handle_payment_utr(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    plan = _PENDING_PAYMENT_PLAN.get(user_id)
+    if not plan or not update.message or not update.message.text:
+        return False
+    utr = update.message.text.strip()
+    if not valid_utr(utr):
+        await update.message.reply_text("⚠️ Invalid UTR/reference. Please send the transaction reference only.")
+        return True
+    try:
+        doc = await asyncio.to_thread(create_payment, user_id, plan, utr)
+    except ValueError as exc:
+        await update.message.reply_text(f"⚠️ {html.escape(str(exc))}", parse_mode="HTML")
+        return True
+    _PENDING_PAYMENT_PLAN.pop(user_id, None)
+    cfg = payment_config()
+    await update.message.reply_text(
+        f"✅ <b>Payment submitted</b>\n\n"
+        f"🧾 ID: <code>{doc['payment_id']}</code>\n"
+        f"📦 Plan: <b>{PLAN_LABELS[plan]}</b>\n"
+        f"💰 Amount: <b>{doc['amount']} {doc['currency']}</b>\n"
+        f"🔢 UTR: <code>{html.escape(utr)}</code>\n\n"
+        "🕒 Status: <b>Pending verification</b>\n"
+        "Aapka plan owner payment verify karne ke baad activate karega."
+    , parse_mode="HTML")
+    return True
+
+
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
         return
@@ -502,6 +576,8 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     user_id = update.effective_user.id if update.effective_user else update.message.chat_id
     if admin_has_pending_action(user_id):
         await admin_message_router(update, context)
+        return
+    if await _handle_payment_utr(update, context, user_id):
         return
 
     user_id = update.effective_user.id if update.effective_user else update.message.chat_id
