@@ -449,13 +449,22 @@ async def premium_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     }
     label, file_limit = labels.get(plan, labels["free"])
     used = await asyncio.to_thread(storage.usage_today, user_id)
+    if _is_admin(user_id):
+        await update.message.reply_text(
+            "👑 <b>Admin / Owner</b>\n"
+            "📏 Max file: <b>Unlimited*</b>\n"
+            "📥 Daily downloads: <b>Unlimited</b>\n\n"
+            "*Subject to Telegram/API/account limits.",
+            parse_mode="HTML",
+        )
+        return
     if info.get("active"):
         date = datetime.fromtimestamp(float(info["until"]), tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         await update.message.reply_text(
             f"📦 <b>{label}</b> active\n"
             f"📏 Max file: <b>{file_limit} MB</b>\n"
             f"📅 Until: <b>{date}</b>\n"
-            f"📥 Today: <b>{used}/{settings.premium_daily_limit}</b>",
+            f"📥 Today: <b>{used}/{storage.daily_limit(user_id)}</b>",
             parse_mode="HTML",
         )
     else:
@@ -463,9 +472,9 @@ async def premium_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"🆓 <b>Free plan</b>\n"
             f"📏 Max file: <b>{file_limit} MB</b>\n"
             f"📥 Today: <b>{used}/{settings.free_daily_limit}</b>\n\n"
-            "🥉 Bronze — 500 MB\n"
-            "💎 Platinum — 1 GB\n"
-            "💎 Diamond — 2 GB",
+            f"🥉 Bronze — {limits['bronze']} MB\n"
+            f"💎 Platinum — {limits['platinum']} MB\n"
+            f"💎 Diamond — {limits['diamond']} MB",
             parse_mode="HTML",
         )
 
