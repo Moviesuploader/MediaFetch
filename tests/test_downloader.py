@@ -60,7 +60,11 @@ class DownloaderRoutingTests(unittest.TestCase):
         ]
         self.assertEqual(
             public_clients,
-            [["android_vr"], ["tv_simply"], ["web_embedded"], ["mweb"]],
+            [["tv"], ["web_safari"], ["mweb"], ["web_embedded"]],
+        )
+        self.assertEqual(
+            profiles[3]["extractor_args"]["youtube"]["fetch_pot"],
+            ["always"],
         )
 
     def test_tiktok_platform_profile(self):
