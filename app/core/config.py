@@ -76,6 +76,15 @@ class Settings(BaseSettings):
     bronze_daily_limit: int = 100
     platinum_daily_limit: int = 100
     diamond_daily_limit: int = 100
+
+    # Gateway-less manual UPI payments. Prices are configurable via environment.
+    payment_upi_id: str = ""
+    payment_currency: str = "INR"
+    bronze_price: int = 0
+    platinum_price: int = 0
+    diamond_price: int = 0
+    payment_duration_days: int = 30
+    payment_qr_url: str = ""
     cache_ttl_days: int = 7
     max_carousel_items: int = 10
 
