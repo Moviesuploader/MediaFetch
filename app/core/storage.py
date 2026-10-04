@@ -18,7 +18,8 @@ class Storage:
         self._lock = threading.RLock()
         self._cache: dict[str, dict[str, Any]] = {}
         self._usage: dict[tuple[int, str], int] = {}
-        self._premium: dict[int, float] = {}\n        self._plans: dict[int, dict[str, Any]] = {}
+        self._premium: dict[int, float] = {}
+        self._plans: dict[int, dict[str, Any]] = {}
         self._users: set[int] = set()
         self._stats = {"downloads": 0, "cache_hits": 0, "failures": 0, "bytes": 0}
         self._history: dict[int, list[dict[str, Any]]] = {}
