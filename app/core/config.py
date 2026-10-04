@@ -4,53 +4,59 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     bot_token: str = ""
     download_dir: str = "/tmp/mediafetch"
-    # Role-based source/download limits. Actual Telegram upload size depends
-    # on whether a Local Bot API Server is configured.
+
+    # Role-based source/download limits.
     free_max_file_mb: int = 100
     premium_max_file_mb: int = 500
     admin_max_file_mb: int = 2000
     max_file_mb: int = 50
     max_concurrent_downloads: int = 1
+
     webhook_mode: bool = False
     webhook_secret: str = ""
     public_base_url: str = ""
     koyeb_public_domain: str = ""
-    # Optional Local Bot API Server. Official Bot API is limited to 50 MB
-    # uploads; Telegram's local server supports uploads up to 2000 MB.
+
+    # Optional Local Bot API Server.
     telegram_api_base_url: str = ""
     telegram_api_file_base_url: str = ""
-    # Optional public HTTPS base URL for hosts such as Antideploy.
     antideploy_public_url: str = ""
+
+    # YouTube/general Netscape cookies.
     ytdlp_cookies_file: str = "/tmp/mediafetch-cookies.txt"
-    # Base64-encoded Netscape/Mozilla cookies file for ephemeral hosts such as Koyeb.
     ytdlp_cookies_b64: str = ""
-    # Optional separate Instagram cookie jar for sites that require login.
+
+    # Dedicated Instagram cookies.
     ytdlp_instagram_cookies_file: str = "/tmp/mediafetch-instagram-cookies.txt"
     ytdlp_instagram_cookies_b64: str = ""
-    # Optional outbound proxy used only for Threads extraction/download requests.\n    # Supports http(s):// and socks5:// URLs accepted by curl-cffi/Playwright.\n    threads_proxy_url: str = ""\n    # Optional dedicated Facebook cookie jar. Keep this separate from YouTube
 
-    # Optional YouTube PO-token provider (for current YouTube bot/attestation enforcement).
-    youtube_pot_provider_url: str = ""
-    # Telegram operational channels: numeric chat IDs (including -100...) or @usernames.
-    dump_channel_id: str = ""
-    links_log_channel_id: str = ""    # and Instagram so credentials are never sent to the wrong platform.
+    # Optional Threads proxy.
+    threads_proxy_url: str = ""
+
+    # Dedicated Facebook cookies.
     ytdlp_facebook_cookies_file: str = "/tmp/mediafetch-facebook-cookies.txt"
     ytdlp_facebook_cookies_b64: str = ""
-    # Comma-separated platforms allowed to use imported cookies. Keep social
-    # platforms cookie-free by default; YouTube is the common cookie-dependent case.
+
+    # Optional YouTube PO-token provider URL, e.g. bgutil HTTP provider.
+    youtube_pot_provider_url: str = ""
+
+    # Operational Telegram channels. Accept numeric chat IDs or @usernames.
+    dump_channel_id: str = ""
+    links_log_channel_id: str = ""
+
+    # Comma-separated platforms allowed to use imported general cookies.
     ytdlp_cookie_platforms: str = "youtube"
     ytdlp_max_retries: int = 2
     extraction_timeout_seconds: int = 60
     download_timeout_seconds: int = 900
     max_download_bytes: int = 52428800
 
-    # Optional persistence and service controls.
+    # Persistence and service controls.
     mongodb_uri: str = ""
     mongodb_db: str = "mediafetch"
     admin_ids: str = ""
     free_daily_limit: int = 10
     premium_daily_limit: int = 100
-    premium_max_file_mb: int = 50
     cache_ttl_days: int = 7
     max_carousel_items: int = 10
 
