@@ -14,6 +14,7 @@ from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
 from app.core.config import settings
+from app.bot.admin import admin_has_pending_action, admin_message_router
 from app.core.rate_limit import UserRateLimiter
 from app.core.storage import storage
 from app.downloader.detector import detect_platform
@@ -464,6 +465,11 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
+        return
+
+    user_id = update.effective_user.id if update.effective_user else update.message.chat_id
+    if admin_has_pending_action(user_id):
+        await admin_message_router(update, context)
         return
 
     user_id = update.effective_user.id if update.effective_user else update.message.chat_id
