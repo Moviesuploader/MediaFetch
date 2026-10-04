@@ -22,6 +22,7 @@ class Storage:
         self._plans: dict[int, dict[str, Any]] = {}
         self._users: set[int] = set()
         self._stats = {"downloads": 0, "cache_hits": 0, "failures": 0, "bytes": 0}
+        self._payment_settings: dict[str, Any] = {}
         self._history: dict[int, list[dict[str, Any]]] = {}
         self._file_limits = {"free": 100, "bronze": 500, "platinum": 1024, "diamond": 2048, "admin": 0}
         self._client = None
@@ -207,6 +208,9 @@ class Storage:
             for key in defaults:
                 if key in doc:
                     defaults[key] = doc[key]
+        else:
+            with self._lock:
+                defaults.update({k: v for k, v in self._payment_settings.items() if k in defaults})
         return defaults
 
     def set_payment_settings(self, values: dict[str, Any]) -> dict[str, Any]:
@@ -221,6 +225,9 @@ class Storage:
         }
         if self._db is not None:
             self._db.settings.update_one({"key": "payment_config"}, {"$set": {"key": "payment_config", **clean}}, upsert=True)
+        else:
+            with self._lock:
+                self._payment_settings = dict(clean)
         return clean
 
     def create_payment(self, payment_id: str, user_id: int, plan: str, amount: int, currency: str, utr: str) -> dict[str, Any]:
