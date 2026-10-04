@@ -73,7 +73,7 @@ def _channels_keyboard() -> InlineKeyboardMarkup:
 def _runtime_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("⬇️ Task Limit", callback_data="mfa:tasklimit"),
-         InlineKeyboardButton("📦 File Limits", callback_data="mfa:filelimits")],
+         InlineKeyboardButton("📦 Plan Limits", callback_data="mfa:filelimits")],
         [InlineKeyboardButton("🔧 Maintenance", callback_data="mfa:maintenance")],
         [InlineKeyboardButton("🔙 Back", callback_data="mfa:home"),
          InlineKeyboardButton("❌ Close", callback_data="mfa:close")],
@@ -147,8 +147,9 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.message.edit_text(
             "⚙️ <b>Runtime Settings</b>\n\n"
             f"⬇️ Concurrent downloads: <b>{storage.concurrent_download_limit()}</b>\n"
-            f"🆓 Free file: <b>{limits['free']} MB</b>\n💎 Premium file: <b>{limits['premium']} MB</b>\n"
-            f"👑 Admin file: <b>{limits['admin']} MB</b>\n"
+            f"🆓 Free: <b>{limits['free']} MB</b>\n🥉 Bronze: <b>{limits['bronze']} MB</b>\n"
+            f"💎 Platinum: <b>{limits['platinum']} MB</b>\n💎 Diamond: <b>{limits['diamond']} MB</b>\n"
+            "👑 Admin/Owner: <b>Unlimited</b>\n"
             f"🔧 Maintenance: <b>{'ON' if storage.maintenance() else 'OFF'}</b>",
             parse_mode="HTML", reply_markup=_runtime_keyboard())
         return
@@ -164,9 +165,11 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if action == "filelimits":
         limits = await asyncio.to_thread(storage.file_limits)
         await query.message.edit_text(
-            "📦 <b>File Limits</b>\n\n"
-            f"🆓 Free: <b>{limits['free']} MB</b>\n💎 Premium: <b>{limits['premium']} MB</b>\n👑 Admin: <b>{limits['admin']} MB</b>\n\n"
-            "Use <code>/set_limit free|premium|admin MB</code>.",
+            "📦 <b>Plan Limits</b>\n\n"
+            f"🆓 Free: <b>{limits['free']} MB</b>\n🥉 Bronze: <b>{limits['bronze']} MB</b>\n"
+            f"💎 Platinum: <b>{limits['platinum']} MB</b>\n💎 Diamond: <b>{limits['diamond']} MB</b>\n"
+            "👑 Admin/Owner: <b>Unlimited</b>\n\n"
+            "Change limits: <code>/set_limit free|bronze|platinum|diamond MB</code>.",
             parse_mode="HTML", reply_markup=_back_keyboard())
         return
 
@@ -352,12 +355,17 @@ async def premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     uid = update.effective_user.id if update.effective_user else None
     if not _is_owner(uid) or not update.message or not _private(update):
         return
-    if len(context.args) != 2 or not context.args[0].isdigit() or not context.args[1].isdigit():
-        await update.message.reply_text("Usage: /premium USER_ID DAYS")
+    if len(context.args) == 2 and context.args[0].isdigit() and context.args[1].isdigit():
+        user_id, plan, days = int(context.args[0]), "bronze", max(1, int(context.args[1]))
+    elif len(context.args) == 3 and context.args[0].isdigit() and context.args[1].lower() in {"bronze", "platinum", "diamond"} and context.args[2].isdigit():
+        user_id, plan, days = int(context.args[0]), context.args[1].lower(), max(1, int(context.args[2]))
+    else:
+        await update.message.reply_text("Usage:\n<code>/premium USER_ID DAYS</code> → Bronze\n<code>/premium USER_ID bronze|platinum|diamond DAYS</code>", parse_mode="HTML")
         return
-    expires = await asyncio.to_thread(storage.set_premium, int(context.args[0]), max(1, int(context.args[1])))
+    expires = await asyncio.to_thread(storage.set_plan, user_id, plan, days)
     date = datetime.fromtimestamp(expires, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    await update.message.reply_text(f"💎 Premium enabled for {context.args[0]} until {date}")
+    labels = {"bronze": "🥉 Bronze", "platinum": "💎 Platinum", "diamond": "💎 Diamond"}
+    await update.message.reply_text(f"✅ {labels[plan]} enabled for <code>{user_id}</code> until <b>{date}</b>.", parse_mode="HTML")
 
 
 async def revoke_premium(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -454,12 +462,12 @@ async def set_limit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     uid = update.effective_user.id if update.effective_user else None
     if not _is_owner(uid) or not update.message or not _private(update):
         return
-    if len(context.args) != 2 or context.args[0].lower() not in {"free", "premium", "admin"} or not context.args[1].isdigit():
-        await update.message.reply_text("Usage: /set_limit free|premium|admin MB")
+    if len(context.args) != 2 or context.args[0].lower() not in {"free", "bronze", "platinum", "diamond", "premium", "admin"} or not context.args[1].isdigit():
+        await update.message.reply_text("Usage: /set_limit free|bronze|platinum|diamond MB")
         return
     mb = int(context.args[1])
-    if not 1 <= mb <= 2000:
-        await update.message.reply_text("Limit must be between 1 and 2000 MB.")
+    if not 1 <= mb <= 100000:
+        await update.message.reply_text("Limit must be between 1 and 100000 MB.")
         return
     limits = await asyncio.to_thread(storage.set_file_limit, context.args[0], mb)
     await update.message.reply_text(
