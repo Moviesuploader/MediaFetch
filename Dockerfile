@@ -10,7 +10,7 @@ COPY --from=deno /deno /usr/local/bin/deno
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg ca-certificates chromium \
+    && apt-get install -y --no-install-recommends ffmpeg ca-certificates chromium gcc \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
