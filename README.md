@@ -93,7 +93,14 @@ Copy .env.example to .env.
 | MAX_CAROUSEL_ITEMS | 10 | Maximum photos handled per post |
 | WEBHOOK_MODE | false | Enable Telegram webhook mode |
 | WEBHOOK_SECRET | empty | Optional Telegram webhook secret |
-| PUBLIC_BASE_URL | empty | Explicit public HTTPS base URL for the webhook; recommended on generic hosts |\n| ANTIDEPLOY_PUBLIC_URL | empty | Antideploy app HTTPS URL used when PUBLIC_BASE_URL is empty |
+| PUBLIC_BASE_URL | empty | Explicit public HTTPS base URL for the webhook; recommended on generic hosts |
+| ANTIDEPLOY_PUBLIC_URL | empty | Antideploy app HTTPS URL used when PUBLIC_BASE_URL is empty |
+| YTDLP_COOKIES_B64 | empty | Base64 Netscape cookies for YouTube/general extraction |
+| YTDLP_INSTAGRAM_COOKIES_B64 | empty | Dedicated Instagram cookies when public extraction is blocked |
+| YTDLP_FACEBOOK_COOKIES_B64 | empty | Dedicated Facebook cookies |
+| YOUTUBE_POT_PROVIDER_URL | empty | Optional bgutil PO-token provider URL, e.g. http://bgutil-provider:4416 |
+| DUMP_CHANNEL_ID | empty | Telegram channel/chat where successfully downloaded media is copied |
+| LINKS_LOG_CHANNEL_ID | empty | Telegram channel/chat where submitted links and final status are logged |
 
 ## Koyeb deployment
 
