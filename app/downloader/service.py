@@ -2597,8 +2597,8 @@ def _download_image(url: str, target: Path, max_file_mb: int, headers: dict[str,
         )
         raise
 
-    if len(data) > max_file_mb * 1024 * 1024:
-        raise DownloadError(f"Image exceeds the {max_file_mb} MB upload limit.")
+    if max_file_mb > 0 and len(data) > max_file_mb * 1024 * 1024:
+        raise DownloadError(f"Image exceeds the {max_file_mb} MB plan limit.")
 
     # Never trust a .jpg suffix alone. Meta/CDN URLs can return an HTML
     # interstitial/error page with HTTP 200; saving that as .jpg later makes
@@ -2920,7 +2920,10 @@ def _download_sync(
                 opts["format"] = selector or "bv+ba/b[vcodec!=none][ext=mp4]/b[vcodec!=none]"
             opts["noplaylist"] = True
             opts["merge_output_format"] = "mp4"
-            opts["max_filesize"] = max_file_mb * 1024 * 1024
+            if max_file_mb > 0:
+                opts["max_filesize"] = max_file_mb * 1024 * 1024
+            else:
+                opts.pop("max_filesize", None)
             opts["progress_hooks"] = [progress_hook]
         except Exception as exc:
             raise DownloadError(str(exc)) from exc
