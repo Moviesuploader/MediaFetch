@@ -316,11 +316,15 @@ def _extract_profiles(url: str) -> list[dict]:
         # "Sign in to confirm you're not a bot" or "The page needs to be
         # reloaded". Try clean public clients first, then retain the existing
         # cookie-backed clients for genuinely account-gated media.
+        # Prefer clients that currently avoid GVS PO-token requirements,
+        # then use mweb where the bundled bgutil provider can supply a token.
+        # Keeping each attempt to one explicit client also avoids the default
+        # multi-client chain repeatedly hitting YouTube bot checks.
         public_clients = (
-            ["default", "web_embedded"],
-            ["web_embedded"],
             ["android_vr"],
             ["tv_simply"],
+            ["web_embedded"],
+            ["mweb"],
         )
         for clients in public_clients:
             youtube_profile = _base_opts()
@@ -2487,9 +2491,21 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
             except Exception as exc:
                 last_error = exc
                 profile_name = "generic" if profile.get("allowed_extractors") else "native"
+                youtube_clients = (
+                    profile.get("extractor_args", {})
+                    .get("youtube", {})
+                    .get("player_client")
+                    if _platform_from_url(candidate) == "youtube"
+                    else None
+                )
                 logger.warning(
-                    "yt-dlp extraction attempt failed platform=%s profile=%s url=%s error=%s",
-                    _platform_from_url(candidate), profile_name, candidate, exc,
+                    "yt-dlp extraction attempt failed platform=%s profile=%s clients=%s cookies=%s url=%s error=%s",
+                    _platform_from_url(candidate),
+                    profile_name,
+                    youtube_clients,
+                    bool(profile.get("cookiefile")),
+                    candidate,
+                    exc,
                 )
 
     if _platform_from_url(url) == "instagram":
