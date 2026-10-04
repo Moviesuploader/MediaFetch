@@ -557,6 +557,23 @@ async def _handle_payment_utr(update: Update, context: ContextTypes.DEFAULT_TYPE
         return True
     _PENDING_PAYMENT_PLAN.pop(user_id, None)
     cfg = payment_config()
+    for admin_id in settings.admin_id_set:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=(
+                    f"🟡 <b>New payment pending</b>\n\n"
+                    f"🧾 ID: <code>{doc['payment_id']}</code>\n"
+                    f"👤 User: <code>{user_id}</code>\n"
+                    f"📦 Plan: <b>{PLAN_LABELS[plan]}</b>\n"
+                    f"💰 Amount: <b>{doc['amount']} {doc['currency']}</b>\n"
+                    f"🔢 UTR: <code>{html.escape(utr)}</code>"
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            logger.warning("Payment admin notification failed user=%s", user_id)
+
     await update.message.reply_text(
         f"✅ <b>Payment submitted</b>\n\n"
         f"🧾 ID: <code>{doc['payment_id']}</code>\n"
