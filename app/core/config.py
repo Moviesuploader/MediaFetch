@@ -5,11 +5,21 @@ class Settings(BaseSettings):
     bot_token: str = ""
     download_dir: str = "/tmp/mediafetch"
 
-    # Role-based source/download limits.
+    # Plan-based source/download limits.
     free_max_file_mb: int = 100
-    premium_max_file_mb: int = 500
-    admin_max_file_mb: int = 2000
-    max_file_mb: int = 50
+    bronze_max_file_mb: int = 500
+    platinum_max_file_mb: int = 1024
+    diamond_max_file_mb: int = 2048
+    premium_max_file_mb: int = 500  # legacy alias
+    admin_max_file_mb: int = 0  # 0 = unlimited at application level
+    max_file_mb: int = 50  # legacy fallback
+    # MTProto user-session uploader. Never put the session string in Git.
+    api_id: int = 0
+    api_hash: str = ""
+    user_session_string: str = ""
+    mtproto_upload_enabled: bool = True
+    mtproto_nonpremium_max_mb: int = 2000
+    mtproto_premium_max_mb: int = 4000
     max_concurrent_downloads: int = 1
 
     webhook_mode: bool = False
