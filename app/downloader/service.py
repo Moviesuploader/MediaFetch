@@ -2440,7 +2440,7 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
     # Photo/carousel posts need child-specific media metadata. Do this before
     # yt-dlp/OpenGraph: OpenGraph exposes only the cover image and can make a
     # carousel look like the same low-resolution photo repeated.
-    if _platform_from_url(url) == "instagram" and re.search(r"/p/[A-Za-z0-9_-]+", urlsplit(url).path):
+    if _platform_from_url(url) == "instagram" and re.search(r"/(?:p|reel|reels|tv)/[A-Za-z0-9_-]+", urlsplit(url).path):
         instagram_photo = _instagram_structured_fallback(url)
         if instagram_photo:
             return instagram_photo
@@ -2541,7 +2541,16 @@ def inspect_media(url: str) -> MediaInfo:
     ))
     if progressive_best:
         estimated_sizes = ((-1, progressive_best),) + estimated_sizes
-    is_photo = not _has_video_format(info) and bool(_best_thumbnail(info) or entries)
+    # Playlist/carousel results can keep media formats on child entries
+    # while the parent has an empty formats list. Inspect recursively so a
+    # video carousel/reel is not presented as photo-only.
+    def has_video_recursive(node: dict) -> bool:
+        if _has_video_format(node):
+            return True
+        children = node.get("entries") or []
+        return any(isinstance(child, dict) and has_video_recursive(child) for child in children)
+
+    is_photo = not has_video_recursive(info) and bool(_best_thumbnail(info) or entries)
     duration = info.get("duration")
     if duration is None and entries:
         duration = next((entry.get("duration") for entry in entries if entry.get("duration")), None)
