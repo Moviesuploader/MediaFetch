@@ -706,17 +706,35 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     status = await update.message.reply_text("🔎 Inspecting media…")
     try:
-        info = await asyncio.wait_for(get_media_info(url), timeout=60)
+        info = await asyncio.wait_for(get_media_info(url), timeout=45)
     except asyncio.TimeoutError:
         async with _PENDING_LOCK:
             current = _PENDING_REQUESTS.get(user_id)
             if current and current[0] == request_id:
                 _PENDING_REQUESTS.pop(user_id, None)
-        await _update_link_log(context, link_log_message, user_id, username, platform, url, "❌ Inspection timeout")
-        await status.edit_text(
-            "⏱️ Media inspection timed out after 60 seconds. "
+
+        # Never let link-log I/O block the user's Telegram response.
+        timeout_text = (
+            "⏱️ YouTube inspection timed out while the source was being checked.\n"
+            "Please try again in a little while."
+            if platform == "YouTube"
+            else
+            "⏱️ Media inspection timed out after 45 seconds. "
             "The source may be slow, restricted, or temporarily unavailable. Please try again."
         )
+        try:
+            await status.edit_text(timeout_text)
+        except Exception:
+            try:
+                await update.message.reply_text(timeout_text)
+            except Exception:
+                logger.exception("Failed to send inspection-timeout response")
+        try:
+            await _update_link_log(
+                context, link_log_message, user_id, username, platform, url, "❌ Inspection timeout"
+            )
+        except Exception:
+            logger.exception("Inspection-timeout link log update failed")
         return
     except DownloadError as exc:
         logger.warning("Media inspection failed user=%s platform=%s url=%s error=%s", user_id, platform, url, exc)
@@ -724,11 +742,43 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             current = _PENDING_REQUESTS.get(user_id)
             if current and current[0] == request_id:
                 _PENDING_REQUESTS.pop(user_id, None)
-        await _update_link_log(context, link_log_message, user_id, username, platform, url, "❌ Inspection failed")
-        await status.edit_text(
-            "❌ I couldn't inspect this URL. It may be private, restricted, "
-            "rate-limited, or temporarily unavailable."
-        )
+
+        error_lower = str(exc).lower()
+        if platform == "YouTube" and (
+            "sign in to confirm" in error_lower
+            or "not a bot" in error_lower
+            or "page needs to be reloaded" in error_lower
+        ):
+            failure_text = (
+                "⚠️ <b>YouTube is temporarily blocking this server.</b>\n\n"
+                "The video itself may be public, but YouTube is rejecting requests "
+                "from the current cloud IP. Please try again later."
+            )
+        elif platform == "YouTube" and "requested format is not available" in error_lower:
+            failure_text = (
+                "⚠️ <b>YouTube did not return a downloadable format.</b>\n\n"
+                "Please try another quality or try the link again shortly."
+            )
+        else:
+            failure_text = (
+                "❌ I couldn't inspect this URL. It may be private, restricted, "
+                "rate-limited, or temporarily unavailable."
+            )
+
+        # Response first; logging must never be able to swallow the Telegram reply.
+        try:
+            await status.edit_text(failure_text, parse_mode="HTML")
+        except Exception:
+            try:
+                await update.message.reply_text(failure_text, parse_mode="HTML")
+            except Exception:
+                logger.exception("Failed to send media-inspection failure response")
+        try:
+            await _update_link_log(
+                context, link_log_message, user_id, username, platform, url, "❌ Inspection failed"
+            )
+        except Exception:
+            logger.exception("Inspection-failure link log update failed")
         return
 
     await _update_link_log(
