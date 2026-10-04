@@ -28,7 +28,12 @@ class Settings(BaseSettings):
     ytdlp_instagram_cookies_file: str = "/tmp/mediafetch-instagram-cookies.txt"
     ytdlp_instagram_cookies_b64: str = ""
     # Optional outbound proxy used only for Threads extraction/download requests.\n    # Supports http(s):// and socks5:// URLs accepted by curl-cffi/Playwright.\n    threads_proxy_url: str = ""\n    # Optional dedicated Facebook cookie jar. Keep this separate from YouTube
-    # and Instagram so credentials are never sent to the wrong platform.
+
+    # Optional YouTube PO-token provider (for current YouTube bot/attestation enforcement).
+    youtube_pot_provider_url: str = ""
+    # Telegram operational channels: numeric chat IDs (including -100...) or @usernames.
+    dump_channel_id: str = ""
+    links_log_channel_id: str = ""    # and Instagram so credentials are never sent to the wrong platform.
     ytdlp_facebook_cookies_file: str = "/tmp/mediafetch-facebook-cookies.txt"
     ytdlp_facebook_cookies_b64: str = ""
     # Comma-separated platforms allowed to use imported cookies. Keep social
