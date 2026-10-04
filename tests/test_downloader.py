@@ -53,8 +53,15 @@ class DownloaderRoutingTests(unittest.TestCase):
         url = "https://www.youtube.com/watch?v=test"
         self.assertEqual(_platform_from_url(url), "youtube")
         profiles = _extract_profiles(url)
-        self.assertGreaterEqual(len(profiles), 3)
-        self.assertEqual(profiles[1]["extractor_args"]["youtube"]["player_client"], ["default", "web_embedded"])
+        self.assertGreaterEqual(len(profiles), 5)
+        public_clients = [
+            profile["extractor_args"]["youtube"]["player_client"]
+            for profile in profiles[1:5]
+        ]
+        self.assertEqual(
+            public_clients,
+            [["android_vr"], ["tv_simply"], ["web_embedded"], ["mweb"]],
+        )
 
     def test_tiktok_platform_profile(self):
         url = "https://www.tiktok.com/@user/video/123"
