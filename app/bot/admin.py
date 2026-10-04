@@ -14,6 +14,7 @@ from telegram.ext import ContextTypes
 from app.core.config import settings
 from app.core.storage import storage
 from app.bot.mtproto import mtproto_uploader
+from app.core.payments import PLAN_LABELS, payment_config, payment_summary
 
 logger = logging.getLogger("mediafetch.admin")
 _PENDING_ADMIN_ACTIONS: dict[int, str] = {}
@@ -47,7 +48,7 @@ def _main_keyboard() -> InlineKeyboardMarkup:
          InlineKeyboardButton("⚙️ Runtime", callback_data="mfa:runtime")],
         [InlineKeyboardButton("📡 Log Channels", callback_data="mfa:channels"),
          InlineKeyboardButton("📢 Broadcast", callback_data="mfa:broadcast")],
-        [InlineKeyboardButton("👥 Plan Management", callback_data="mfa:plans")],
+        [InlineKeyboardButton("👥 Plan Management", callback_data="mfa:plans"), InlineKeyboardButton("💳 Payments", callback_data="mfa:payments")],
         [InlineKeyboardButton("🍪 Cookies", callback_data="mfa:cookies"),
          InlineKeyboardButton("🩺 Diagnostics", callback_data="mfa:diagnostics")],
         [InlineKeyboardButton("❌ Close", callback_data="mfa:close")],
@@ -133,6 +134,89 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         _PENDING_ADMIN_ACTIONS.pop(uid, None)
         _PENDING_BROADCASTS.pop(uid, None)
         await query.message.delete()
+        return
+
+    if action == "payments":
+        stats = await asyncio.to_thread(storage.payment_stats)
+        cfg = payment_config()
+        await query.message.edit_text(
+            "💳 <b>Payment Management</b>\n\n"
+            f"🟡 Pending: <b>{stats['pending']}</b>\n✅ Approved: <b>{stats['approved']}</b>\n❌ Rejected: <b>{stats['rejected']}</b>\n\n"
+            f"📱 UPI: <code>{cfg['upi_id'] or 'Not configured'}</code>\n"
+            f"🥉 Bronze: <b>{cfg['prices']['bronze']} {cfg['currency']}</b>\n"
+            f"💎 Platinum: <b>{cfg['prices']['platinum']} {cfg['currency']}</b>\n"
+            f"💎 Diamond: <b>{cfg['prices']['diamond']} {cfg['currency']}</b>\n"
+            f"⏳ Duration: <b>{cfg['duration_days']} days</b>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🟡 Pending Payments", callback_data="mfa:paypending")],
+                [InlineKeyboardButton("⚙️ Configure UPI/Prices", callback_data="mfa:payconfig")],
+                [InlineKeyboardButton("🔙 Back", callback_data="mfa:home"), InlineKeyboardButton("❌ Close", callback_data="mfa:close")]
+            ]))
+        return
+
+    if action == "paypending":
+        items = await asyncio.to_thread(storage.pending_payments, 20)
+        rows = [[InlineKeyboardButton(
+            f"{x.get('payment_id')} • {PLAN_LABELS.get(x.get('plan'), x.get('plan'))} • {x.get('amount')} {x.get('currency')}",
+            callback_data=f"mfa:payview:{x.get('payment_id')}"
+        )] for x in items]
+        rows.append([InlineKeyboardButton("🔙 Back", callback_data="mfa:payments")])
+        await query.message.edit_text(
+            "🟡 <b>Pending Payments</b>\n\n" + ("Select a payment to verify." if items else "No pending payments."),
+            parse_mode="HTML", reply_markup=InlineKeyboardMarkup(rows))
+        return
+
+    if action.startswith("payview:"):
+        payment_id = action.split(":", 1)[1]
+        doc = await asyncio.to_thread(storage.payment_by_id, payment_id)
+        if not doc:
+            await query.message.edit_text("❌ Payment not found.", reply_markup=_back_keyboard())
+            return
+        await query.message.edit_text(
+            payment_summary(doc) + "\n\n⚠️ Verify payment in your UPI/bank app before approving.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Approve", callback_data=f"mfa:payapprove:{payment_id}"), InlineKeyboardButton("❌ Reject", callback_data=f"mfa:payreject:{payment_id}")],
+                [InlineKeyboardButton("🔙 Pending", callback_data="mfa:paypending")]
+            ]))
+        return
+
+    if action.startswith("payapprove:"):
+        payment_id = action.split(":", 1)[1]
+        try:
+            doc = await asyncio.to_thread(storage.approve_payment, payment_id, uid, payment_config()["duration_days"])
+        except ValueError as exc:
+            await query.message.edit_text(f"⚠️ {exc}", reply_markup=_back_keyboard())
+            return
+        expires = float(doc.get("subscription_until") or 0)
+        date = datetime.fromtimestamp(expires, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        try:
+            await context.bot.send_message(chat_id=int(doc["user_id"]), text=f"✅ <b>Payment approved!</b>\n\n📦 Plan: <b>{PLAN_LABELS.get(doc.get('plan'), doc.get('plan'))}</b>\n⏳ Active until: <b>{date}</b>", parse_mode="HTML")
+        except Exception:
+            logger.warning("Could not notify approved payment id=%s", payment_id)
+        await query.message.edit_text(payment_summary(doc) + f"\n\n✅ <b>Approved</b>\n⏳ Active until: <b>{date}</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💳 Payments", callback_data="mfa:payments")]]))
+        return
+
+    if action.startswith("payreject:"):
+        payment_id = action.split(":", 1)[1]
+        try:
+            doc = await asyncio.to_thread(storage.reject_payment, payment_id, uid)
+        except ValueError as exc:
+            await query.message.edit_text(f"⚠️ {exc}", reply_markup=_back_keyboard())
+            return
+        try:
+            await context.bot.send_message(chat_id=int(doc["user_id"]), text="❌ <b>Payment rejected.</b>\nPlease contact the owner if this is unexpected.", parse_mode="HTML")
+        except Exception:
+            logger.warning("Could not notify rejected payment id=%s", payment_id)
+        await query.message.edit_text(payment_summary(doc) + "\n\n❌ <b>Rejected</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💳 Payments", callback_data="mfa:payments")]]))
+        return
+
+    if action == "payconfig":
+        _PENDING_ADMIN_ACTIONS[uid] = "payment_config"
+        await query.message.edit_text(
+            "⚙️ <b>Payment Configuration</b>\n\nSend:\n<code>UPI_ID BRONZE PLATINUM DIAMOND DAYS</code>\n\nExample: <code>name@upi 49 99 149 30</code>\nUTR manually verify hoga; koi gateway nahi.",
+            parse_mode="HTML", reply_markup=_back_keyboard())
         return
 
     if action == "overview":
@@ -234,6 +318,20 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                  InlineKeyboardButton("🏠 Main Panel", callback_data="mfa:home")]
             ]),
         )
+        return
+
+    if action == "payment_config":
+        parts = (message.text or "").strip().split()
+        if len(parts) != 5 or not all(x.isdigit() for x in parts[1:]):
+            await message.reply_text("⚠️ Format: <code>UPI_ID BRONZE PLATINUM DIAMOND DAYS</code>", parse_mode="HTML")
+            return
+        values = {"upi_id": parts[0], "bronze_price": int(parts[1]), "platinum_price": int(parts[2]), "diamond_price": int(parts[3]), "duration_days": int(parts[4]), "currency": "INR"}
+        if min(values["bronze_price"], values["platinum_price"], values["diamond_price"]) <= 0 or not 1 <= values["duration_days"] <= 3650:
+            await message.reply_text("⚠️ Prices > 0 and duration 1–3650 days hona chahiye.")
+            return
+        await asyncio.to_thread(storage.set_payment_settings, values)
+        _PENDING_ADMIN_ACTIONS.pop(uid, None)
+        await message.reply_text("✅ <b>Payment settings saved.</b>\n\n📱 UPI: <code>%s</code>\n🥉 %s INR • 💎 %s INR • 💎 %s INR\n⏳ %s days" % (values["upi_id"], values["bronze_price"], values["platinum_price"], values["diamond_price"], values["duration_days"]), parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💳 Payments", callback_data="mfa:payments")]]))
         return
 
     if action == "tasklimit":
