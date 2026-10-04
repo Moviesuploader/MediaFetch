@@ -47,6 +47,7 @@ def _main_keyboard() -> InlineKeyboardMarkup:
          InlineKeyboardButton("⚙️ Runtime", callback_data="mfa:runtime")],
         [InlineKeyboardButton("📡 Log Channels", callback_data="mfa:channels"),
          InlineKeyboardButton("📢 Broadcast", callback_data="mfa:broadcast")],
+        [InlineKeyboardButton("👥 Plan Management", callback_data="mfa:plans")],
         [InlineKeyboardButton("🍪 Cookies", callback_data="mfa:cookies"),
          InlineKeyboardButton("🩺 Diagnostics", callback_data="mfa:diagnostics")],
         [InlineKeyboardButton("❌ Close", callback_data="mfa:close")],
@@ -142,6 +143,46 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"❌ Failures: <b>{s['failures']}</b>\n💾 Data: <b>{s['bytes']/(1024*1024):.1f} MB</b>\n"
             f"👥 Users: <b>{len(await asyncio.to_thread(storage.user_ids))}</b>",
             parse_mode="HTML", reply_markup=_back_keyboard())
+        return
+
+    if action == "plans":
+        limits = await asyncio.to_thread(storage.file_limits)
+        await query.message.edit_text(
+            "👥 <b>Plan Management</b>\n\n"
+            f"🆓 Free: <b>{limits['free']} MB</b>\n"
+            f"🥉 Bronze: <b>{limits['bronze']} MB</b>\n"
+            f"💎 Platinum: <b>{limits['platinum']} MB</b>\n"
+            f"💎 Diamond: <b>{limits['diamond']} MB</b>\n"
+            "👑 Admin/Owner: <b>Unlimited</b>\n\n"
+            "<b>Grant:</b> <code>USER_ID PLAN DAYS</code>\n"
+            "<b>Revoke:</b> <code>USER_ID</code>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎁 Grant Plan", callback_data="mfa:grantplan"),
+                 InlineKeyboardButton("🔄 Revoke Plan", callback_data="mfa:revokeplan")],
+                [InlineKeyboardButton("🔙 Back", callback_data="mfa:home"),
+                 InlineKeyboardButton("❌ Close", callback_data="mfa:close")]
+            ]),
+        )
+        return
+
+    if action == "grantplan":
+        _PENDING_ADMIN_ACTIONS[uid] = "grant_plan"
+        await query.message.edit_text(
+            "🎁 <b>Grant Plan</b>\n\n"
+            "Send: <code>USER_ID bronze|platinum|diamond DAYS</code>",
+            parse_mode="HTML",
+            reply_markup=_back_keyboard(),
+        )
+        return
+
+    if action == "revokeplan":
+        _PENDING_ADMIN_ACTIONS[uid] = "revoke_plan"
+        await query.message.edit_text(
+            "🔄 <b>Revoke Plan</b>\n\nSend the numeric Telegram user ID.",
+            parse_mode="HTML",
+            reply_markup=_back_keyboard(),
+        )
         return
 
     if action == "runtime":
