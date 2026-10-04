@@ -197,6 +197,45 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             parse_mode="HTML", reply_markup=_runtime_keyboard())
         return
 
+    if action == "grant_plan":
+        parts = (message.text or "").strip().split()
+        if len(parts) != 3 or not parts[0].isdigit() or parts[1].lower() not in {"bronze", "platinum", "diamond"} or not parts[2].isdigit():
+            await message.reply_text("⚠️ Format: <code>USER_ID bronze|platinum|diamond DAYS</code>", parse_mode="HTML")
+            return
+        user_id = int(parts[0])
+        plan = parts[1].lower()
+        days = max(1, int(parts[2]))
+        expires = await asyncio.to_thread(storage.set_plan, user_id, plan, days)
+        _PENDING_ADMIN_ACTIONS.pop(uid, None)
+        date = datetime.fromtimestamp(expires, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        labels = {"bronze": "🥉 Bronze", "platinum": "💎 Platinum", "diamond": "💎 Diamond"}
+        await message.reply_text(
+            f"✅ {labels[plan]} granted to <code>{user_id}</code> until <b>{date}</b>.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("👥 Plan Management", callback_data="mfa:plans"),
+                 InlineKeyboardButton("🏠 Main Panel", callback_data="mfa:home")]
+            ]),
+        )
+        return
+
+    if action == "revoke_plan":
+        value = (message.text or "").strip()
+        if not value.isdigit():
+            await message.reply_text("⚠️ Send a numeric Telegram user ID.")
+            return
+        await asyncio.to_thread(storage.set_plan, int(value), "free", 0)
+        _PENDING_ADMIN_ACTIONS.pop(uid, None)
+        await message.reply_text(
+            f"✅ Plan revoked for <code>{value}</code>. User is back on Free.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("👥 Plan Management", callback_data="mfa:plans"),
+                 InlineKeyboardButton("🏠 Main Panel", callback_data="mfa:home")]
+            ]),
+        )
+        return
+
     if action == "tasklimit":
         _PENDING_ADMIN_ACTIONS[uid] = "tasklimit"
         await query.message.edit_text(
