@@ -33,7 +33,11 @@ def _owner_id() -> int | None:
 
 def _is_owner(user_id: int | None) -> bool:
     return bool(user_id and _owner_id() == user_id)
-\n\ndef admin_has_pending_action(user_id: int | None) -> bool:\n    return bool(user_id and _PENDING_ADMIN_ACTIONS.get(user_id))\n
+
+
+def admin_has_pending_action(user_id: int | None) -> bool:
+    return bool(user_id and _PENDING_ADMIN_ACTIONS.get(user_id))
+
 
 def _private(update: Update) -> bool:
     return bool(update.effective_chat and update.effective_chat.type == "private")
