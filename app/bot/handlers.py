@@ -690,7 +690,7 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             settings.cache_ttl_days * 86400,
         )
         cached_size = int((cache or {}).get("metadata", {}).get("size_bytes", 0) or 0)
-        if cache and cache.get("file_ids") and (not cached_size or cached_size <= max_file_mb * 1024 * 1024):
+        if cache and cache.get("file_ids") and (not cached_size or max_file_mb == 0 or cached_size <= max_file_mb * 1024 * 1024):
             try:
                 cache_hit = True
                 await query.edit_message_text("⚡ <b>Cache hit</b> — sending instantly…", parse_mode="HTML")
