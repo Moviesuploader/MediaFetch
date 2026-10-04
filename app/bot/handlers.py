@@ -127,7 +127,8 @@ def _limit_message(user_id: int, estimated_bytes: int, limit_mb: int) -> str:
 
 
 def _limit_for(user_id: int) -> int:
-    return settings.premium_daily_limit if storage.is_premium(user_id) else settings.free_daily_limit
+    # 0 means unlimited; admins/owner bypass the normal daily quota.
+    return storage.daily_limit(user_id, is_admin=_is_admin(user_id))
 
 
 def _media_kind(path: Path) -> str:
@@ -498,7 +499,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     username = update.effective_user.username if update.effective_user else None
     await asyncio.to_thread(storage.touch_user, user_id, username)
 
-    if await asyncio.to_thread(storage.maintenance) and user_id not in settings.admin_id_set:
+    if await asyncio.to_thread(storage.maintenance) and not _is_admin(user_id):
         await update.message.reply_text("🔧 MediaFetch is temporarily under maintenance. Please try again later.")
         return
 
@@ -527,7 +528,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     used = await asyncio.to_thread(storage.usage_today, user_id)
     limit = _limit_for(user_id)
-    if used >= limit:
+    if limit > 0 and used >= limit:
         await update.message.reply_text(
             f"🚦 Daily limit reached ({limit}).\n"
             "Premium users have a higher daily limit."
@@ -635,23 +636,11 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     limit = _limit_for(user_id)
     used = await asyncio.to_thread(storage.usage_today, user_id)
-    if used >= limit:
+    if limit > 0 and used >= limit:
         await query.edit_message_text(f"🚦 Daily limit reached ({limit}).")
         return
 
     max_file_mb = _file_limit_mb(user_id)
-
-    # A role limit above 50 MB needs either the dedicated MTProto user session
-    # or a Local Bot API Server. Reject early instead of downloading a file that
-    # the configured Telegram transport cannot deliver.
-    if max_file_mb > 50 and not settings.telegram_api_base_url and not mtproto_uploader.configured:
-        await query.edit_message_text(
-            "⚠️ <b>Large-file transport is not configured.</b>\n\n"
-            "This plan allows files above 50 MB, but Telegram's normal cloud Bot API "
-            "cannot upload them. Configure the MTProto user session first.",
-            parse_mode="HTML",
-        )
-        return
 
     estimated_bytes = _estimated_size_for_mode(info, mode) if isinstance(info, MediaInfo) else 0
     if max_file_mb > 0 and estimated_bytes > max_file_mb * 1024 * 1024:
