@@ -6,6 +6,7 @@ from telegram import Update
 
 from app.bot.application import build_application
 from app.core.config import settings
+from app.bot.mtproto import mtproto_uploader
 
 logger = logging.getLogger("mediafetch")
 
@@ -37,6 +38,9 @@ async def lifespan(app: FastAPI):
 
     await bot.initialize()
     await bot.start()
+
+    if settings.mtproto_upload_enabled and settings.user_session_string:
+        await mtproto_uploader.start()
 
     if settings.webhook_mode:
 
@@ -87,6 +91,7 @@ async def lifespan(app: FastAPI):
 
     await bot.stop()
     await bot.shutdown()
+    await mtproto_uploader.stop()
 
 
 app = FastAPI(title="MediaFetch", version="0.1.0", lifespan=lifespan)
