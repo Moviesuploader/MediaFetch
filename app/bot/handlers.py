@@ -539,7 +539,10 @@ async def payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         "3️⃣ Neeche sirf UTR bhejo.\n\n"
         "⚠️ UTR submit karna payment proof nahi hai. Plan owner verification ke baad hi activate hoga."
     )
-    await query.edit_message_text(text, parse_mode="HTML")
+    payment_buttons = []
+    if cfg["qr_url"]:
+        payment_buttons.append([InlineKeyboardButton("📷 Open UPI QR", url=cfg["qr_url"])])
+    await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(payment_buttons) if payment_buttons else None)
 
 
 async def _handle_payment_utr(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
