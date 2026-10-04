@@ -926,7 +926,9 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                             )
                         except LargeUploadError as exc:
                             raise DownloadError(f"Large Telegram upload failed: {exc}") from exc
-                        sent_messages_for_dump.extend(sent_large)
+                        # MTProto already copied the uploaded media to the
+                        # configured dump channel, so do not pass its Message
+                        # objects through the Bot API dump helper.
                         continue
 
                     sent = await _send_media_message(
