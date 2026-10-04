@@ -2,7 +2,13 @@ import unittest
 from urllib.parse import urlsplit
 
 from app.downloader.detector import detect_platform
-from app.downloader.service import _extract_profiles, _platform_from_url, _quality_selector, _url_variants
+from app.downloader.service import (
+    _entry_video_format,
+    _extract_profiles,
+    _platform_from_url,
+    _quality_selector,
+    _url_variants,
+)
 
 
 class DownloaderRoutingTests(unittest.TestCase):
@@ -85,6 +91,18 @@ class DownloaderRoutingTests(unittest.TestCase):
     def test_facebook_uses_browser_impersonation(self):
         profiles = _extract_profiles("https://www.facebook.com/reel/123")
         self.assertTrue(all(profile.get("impersonate") == "chrome" for profile in profiles))
+
+    def test_carousel_child_video_format_prefers_progressive(self):
+        entry = {
+            "formats": [
+                {"url": "https://cdn.example/video-720.mp4", "vcodec": "h264", "acodec": "aac", "height": 720},
+                {"url": "https://cdn.example/video-1080.mp4", "vcodec": "h264", "acodec": "aac", "height": 1080},
+                {"url": "https://cdn.example/video-1440.mp4", "vcodec": "h264", "acodec": "none", "height": 1440},
+            ]
+        }
+        selected = _entry_video_format(entry, "1080p")
+        self.assertEqual(selected["height"], 1080)
+        self.assertEqual(selected["acodec"], "aac")
 
     def test_tiktok_platform_profile(self):
         url = "https://www.tiktok.com/@user/video/123"
