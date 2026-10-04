@@ -320,7 +320,8 @@ class Storage:
             return dict(current)
 
     def concurrent_download_limit(self) -> int:
-        from app.core.config import settings\n        default = max(1, min(int(settings.max_concurrent_downloads), 20))
+        from app.core.config import settings
+        default = max(1, min(int(settings.max_concurrent_downloads), 20))
         if self._db is not None:
             doc = self._db.settings.find_one({"key": "runtime_limits"}) or {}
             try:
