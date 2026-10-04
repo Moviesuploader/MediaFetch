@@ -8,6 +8,8 @@ from telegram.ext import (
 
 from app.bot.admin import (
     admin_command,
+    admin_callback,
+    admin_message_router,
     broadcast_command,
     cookies_clear,
     diagnostics_command,
@@ -81,8 +83,12 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("diagnostics", diagnostics_command))
 
     application.add_handler(CallbackQueryHandler(download_choice, pattern=r"^mf:"))
+    application.add_handler(CallbackQueryHandler(admin_callback, pattern=r"^mfa:"))
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url)
+    )
+    application.add_handler(
+        MessageHandler(filters.FORWARDED & ~filters.COMMAND, admin_message_router)
     )
     application.add_error_handler(_error_handler)
     return application
