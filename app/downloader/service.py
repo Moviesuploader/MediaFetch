@@ -45,6 +45,8 @@ class MediaInfo:
     heights: tuple[int, ...]
     is_photo: bool
     item_count: int = 1
+    description: str = ""
+    webpage_url: str = ""
     # (mode_height, estimated_bytes). -1 height means a best/progressive
     # format. Values come from yt-dlp filesize/filesize_approx when available.
     estimated_sizes: tuple[tuple[int, int], ...] = ()
@@ -2655,6 +2657,8 @@ def inspect_media(url: str) -> MediaInfo:
         heights=tuple(heights),
         is_photo=is_photo,
         item_count=min(max(len(entries), 1), settings.max_carousel_items),
+        description=str(info.get("description") or info.get("caption") or ""),
+        webpage_url=str(info.get("webpage_url") or ""),
         estimated_sizes=estimated_sizes,
     )
 
@@ -2956,12 +2960,40 @@ def _download_direct_video(
         raise
 
 
+def _entry_video_format(entry: dict, mode: str) -> dict | None:
+    """Choose a directly downloadable progressive video format from a child."""
+    formats = [
+        fmt for fmt in (entry.get("formats") or [])
+        if isinstance(fmt, dict)
+        and isinstance(fmt.get("url"), str)
+        and fmt.get("vcodec") not in (None, "none")
+    ]
+    if not formats:
+        return None
+    requested_height = int(mode[:-1]) if mode.endswith("p") and mode[:-1].isdigit() else None
+    progressive = [
+        fmt for fmt in formats
+        if fmt.get("acodec") not in (None, "none")
+        and (requested_height is None or int(fmt.get("height") or 0) <= requested_height)
+    ]
+    if not progressive:
+        progressive = [fmt for fmt in formats if fmt.get("acodec") not in (None, "none")]
+    candidates = progressive or formats
+    return max(candidates, key=lambda fmt: (
+        int(fmt.get("height") or 0) <= (requested_height or 10**9),
+        int(fmt.get("height") or 0),
+        int(fmt.get("width") or 0),
+        int(fmt.get("filesize") or fmt.get("filesize_approx") or 0),
+    ))
+
+
 def _download_structured_media(
     info: dict,
     output_dir: str,
     max_file_mb: int,
     notify: Callable[[float, str], None],
     platform: str,
+    mode: str = "best",
 ) -> list[Path]:
     """Download structured Meta media in original carousel order.
 
@@ -2977,10 +3009,16 @@ def _download_structured_media(
     paths: list[Path] = []
     for index, entry in enumerate(entries, start=1):
         direct_video = entry.get("_mediafetch_direct_video")
+        video_headers = entry.get("_mediafetch_direct_headers")
+        if not isinstance(video_headers, dict):
+            video_headers = entry.get("http_headers") if isinstance(entry.get("http_headers"), dict) else {}
+        if not isinstance(direct_video, str) or not direct_video:
+            selected_format = _entry_video_format(entry, mode)
+            if selected_format:
+                direct_video = selected_format.get("url")
+                video_headers = selected_format.get("http_headers") or video_headers
+
         if isinstance(direct_video, str) and direct_video:
-            headers = entry.get("_mediafetch_direct_headers")
-            if not isinstance(headers, dict):
-                headers = {}
             path = _download_direct_video(
                 direct_video,
                 output_dir,
@@ -2990,7 +3028,7 @@ def _download_structured_media(
                     ((base + percent / 100) / len(entries)) * 100,
                     f"media {index}/{len(entries)} • {detail}",
                 ),
-                headers,
+                video_headers,
                 platform=platform,
             )
             paths.append(path)
@@ -3147,15 +3185,20 @@ def _download_sync(
                 platform=platform,
             )
 
-        if mode != "audio" and platform in {"threads", "instagram"} and info.get("entries"):
+        if mode != "audio" and info.get("entries"):
             structured_entries = _image_entries(info)
-            if any(
+            if len(structured_entries) > 1 and any(
                 isinstance(entry, dict)
-                and isinstance(entry.get("_mediafetch_direct_video"), str)
+                and (
+                    isinstance(entry.get("_mediafetch_direct_video"), str)
+                    or _has_video_format(entry)
+                    or _direct_image_url(entry)
+                    or _best_thumbnail(entry)
+                )
                 for entry in structured_entries
             ):
                 logger.info(
-                    "%s structured mixed-media download starting items=%d",
+                    "%s multi-media post download starting items=%d",
                     platform,
                     len(structured_entries),
                 )
@@ -3165,6 +3208,7 @@ def _download_sync(
                     max_file_mb,
                     notify,
                     platform,
+                    mode,
                 )
 
         if mode == "photo" or (mode != "audio" and not _has_video_format(info)):
