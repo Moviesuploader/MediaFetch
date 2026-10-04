@@ -13,6 +13,7 @@ from telegram.ext import ContextTypes
 
 from app.core.config import settings
 from app.core.storage import storage
+from app.bot.mtproto import mtproto_uploader
 
 logger = logging.getLogger("mediafetch.admin")
 _PENDING_ADMIN_ACTIONS: dict[int, str] = {}
@@ -74,7 +75,8 @@ def _runtime_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("⬇️ Task Limit", callback_data="mfa:tasklimit"),
          InlineKeyboardButton("📦 Plan Limits", callback_data="mfa:filelimits")],
-        [InlineKeyboardButton("🔧 Maintenance", callback_data="mfa:maintenance")],
+        [InlineKeyboardButton("🚀 Upload Engine", callback_data="mfa:upload"),
+         InlineKeyboardButton("🔧 Maintenance", callback_data="mfa:maintenance")],
         [InlineKeyboardButton("🔙 Back", callback_data="mfa:home"),
          InlineKeyboardButton("❌ Close", callback_data="mfa:close")],
     ])
@@ -170,6 +172,30 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"💎 Platinum: <b>{limits['platinum']} MB</b>\n💎 Diamond: <b>{limits['diamond']} MB</b>\n"
             "👑 Admin/Owner: <b>Unlimited</b>\n\n"
             "Change limits: <code>/set_limit free|bronze|platinum|diamond MB</code>.",
+            parse_mode="HTML", reply_markup=_back_keyboard())
+        return
+
+    if action == "upload":
+        configured = mtproto_uploader.configured
+        connected = mtproto_uploader.ready
+        if configured and not connected:
+            await mtproto_uploader.start()
+            connected = mtproto_uploader.ready
+        if connected:
+            account = "Premium" if mtproto_uploader.account_is_premium else "Standard"
+            ceiling = mtproto_uploader.telegram_single_file_limit_mb
+            account_text = f"{account} • {ceiling} MB Telegram single-file ceiling"
+        else:
+            account_text = "Not connected"
+        await query.message.edit_text(
+            "🚀 <b>Telegram Upload Engine</b>\n\n"
+            f"🤖 Bot API: <b>≤50 MB</b> cloud limit\n"
+            f"🔐 MTProto session: <b>{'Configured' if configured else 'Not configured'}</b>\n"
+            f"🟢 Connection: <b>{'Ready' if connected else 'Offline'}</b>\n"
+            f"📦 Account transport: <b>{account_text}</b>\n\n"
+            "Files above the account's Telegram single-file ceiling are automatically "
+            "split into sequential parts. MediaFetch plan limits are separate from "
+            "Telegram transport limits.",
             parse_mode="HTML", reply_markup=_back_keyboard())
         return
 
