@@ -328,6 +328,10 @@ def _extract_profiles(url: str) -> list[dict]:
             youtube_profile["extractor_args"] = {
                 "youtube": {"player_client": clients},
             }
+            if settings.youtube_pot_provider_url:
+                youtube_profile["extractor_args"]["youtubepot-bgutilhttp"] = {
+                    "base_url": settings.youtube_pot_provider_url.rstrip("/")
+                }
             profiles.append(youtube_profile)
 
     if platform == "facebook":
