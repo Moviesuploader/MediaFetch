@@ -51,8 +51,10 @@ class Settings(BaseSettings):
     ytdlp_facebook_cookies_file: str = "/tmp/mediafetch-facebook-cookies.txt"
     ytdlp_facebook_cookies_b64: str = ""
 
-    # Optional YouTube PO-token provider URL, e.g. bgutil HTTP provider.
-    youtube_pot_provider_url: str = ""
+    # Bundled local bgutil HTTP provider defaults to localhost:4416.
+    # Operators can point this at an external provider when needed.
+    youtube_pot_provider_enabled: bool = True
+    youtube_pot_provider_url: str = "http://127.0.0.1:4416"
 
     # Operational Telegram channels. Accept numeric chat IDs or @usernames.
     dump_channel_id: str = ""
@@ -60,8 +62,8 @@ class Settings(BaseSettings):
 
     # Comma-separated platforms allowed to use imported general cookies.
     ytdlp_cookie_platforms: str = "youtube"
-    ytdlp_max_retries: int = 2
-    extraction_timeout_seconds: int = 60
+    ytdlp_max_retries: int = 1
+    extraction_timeout_seconds: int = 30
     download_timeout_seconds: int = 900
     max_download_bytes: int = 52428800
 
