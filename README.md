@@ -85,7 +85,8 @@ Copy .env.example to .env.
 | MAX_CONCURRENT_DOWNLOADS | 1 | Global downloader concurrency |
 | MONGODB_URI | empty | Optional MongoDB connection |
 | MONGODB_DB | mediafetch | MongoDB database name |
-| ADMIN_IDS | empty | Comma-separated Telegram admin IDs; these are separate from the owner |\n| OWNER_ID | empty | Telegram numeric user ID of the real owner; required for owner-only `/admin` controls |
+| ADMIN_IDS | empty | Comma-separated Telegram admin IDs; these are separate from the owner |
+| OWNER_ID | empty | Telegram numeric user ID of the real owner; required for owner-only `/admin` controls |
 | FREE_DAILY_LIMIT | 10 | Free successful requests/day/user |
 | PREMIUM_DAILY_LIMIT | 100 | Premium successful requests/day/user |
 | PREMIUM_MAX_FILE_MB | 50 | Premium upload limit (capped by Telegram's current 50 MB cloud Bot API upload limit) |
