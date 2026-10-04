@@ -230,11 +230,11 @@ class Storage:
                 self._payment_settings = dict(clean)
         return clean
 
-    def create_payment(self, payment_id: str, user_id: int, plan: str, amount: int, currency: str, utr: str) -> dict[str, Any]:
+    def create_payment(self, payment_id: str, user_id: int, plan: str, amount: int, currency: str, utr: str, duration_days: int = 30) -> dict[str, Any]:
         doc = {
             "payment_id": payment_id, "user_id": int(user_id), "plan": plan,
             "amount": int(amount), "currency": currency, "utr": utr,
-            "status": "pending", "created_at": datetime.now(timezone.utc),
+            "status": "pending", "duration_days": max(1, int(duration_days)), "created_at": datetime.now(timezone.utc),
             "verified_at": None, "verified_by": None, "subscription_until": None,
         }
         if self._db is not None:
@@ -281,7 +281,8 @@ class Storage:
             )
             if not doc:
                 raise ValueError("Payment is no longer pending")
-            expires = self.set_plan(int(doc["user_id"]), str(doc["plan"]), days)
+            effective_days = max(1, int(doc.get("duration_days", days)))
+            expires = self.set_plan(int(doc["user_id"]), str(doc["plan"]), effective_days)
             self._db.payments.update_one({"payment_id": payment_id}, {"$set": {"subscription_until": expires}})
             doc["subscription_until"] = expires
             return doc
@@ -290,7 +291,8 @@ class Storage:
             if not doc or doc.get("status") != "pending":
                 raise ValueError("Payment is no longer pending")
             doc["status"] = "approved"; doc["verified_at"] = now; doc["verified_by"] = int(verified_by)
-            expires = self.set_plan(int(doc["user_id"]), str(doc["plan"]), days)
+            effective_days = max(1, int(doc.get("duration_days", days)))
+            expires = self.set_plan(int(doc["user_id"]), str(doc["plan"]), effective_days)
             doc["subscription_until"] = expires
             return dict(doc)
 
