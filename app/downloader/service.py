@@ -406,6 +406,11 @@ def _extract_profiles(url: str) -> list[dict]:
         # curl-cffi is installed via yt-dlp[default,curl-cffi].
         for profile in profiles:
             profile["ignore_no_formats_error"] = True
+            # Authenticated Facebook pages frequently return a reduced HTML
+            # response unless the request uses a browser TLS fingerprint.
+            # yt-dlp's curl_cffi integration supports the Chrome target.
+            if curl_requests is not None:
+                profile["impersonate"] = "chrome"
             headers = dict(profile.get("http_headers") or {})
             headers.update({
                 "Accept": (
@@ -2584,13 +2589,23 @@ def inspect_media(url: str) -> MediaInfo:
         raise DownloadError(str(exc)) from exc
 
     entries = _image_entries(info)
-    formats = info.get("formats") or []
+    # Some player clients/playlist fallbacks keep the useful formats on
+    # child entries. Flatten those formats before building quality buttons so
+    # the UI reflects the actual media returned by yt-dlp.
+    def iter_video_formats(node: dict):
+        for fmt in node.get("formats") or []:
+            if isinstance(fmt, dict):
+                yield fmt
+        for child in node.get("entries") or []:
+            if isinstance(child, dict):
+                yield from iter_video_formats(child)
+
+    formats = list(iter_video_formats(info))
     heights = sorted(
         {
             int(fmt.get("height"))
             for fmt in formats
-            if isinstance(fmt, dict)
-            and fmt.get("vcodec") not in (None, "none")
+            if fmt.get("vcodec") not in (None, "none")
             and fmt.get("height")
             and int(fmt.get("height")) > 0
         },
@@ -2600,16 +2615,13 @@ def inspect_media(url: str) -> MediaInfo:
     estimated: dict[int, int] = {}
     progressive_best = 0
     for fmt in formats:
-        if not isinstance(fmt, dict) or fmt.get("vcodec") in (None, "none"):
+        if fmt.get("vcodec") in (None, "none"):
             continue
         size = int(fmt.get("filesize") or fmt.get("filesize_approx") or 0)
         if size <= 0:
             continue
         height = int(fmt.get("height") or 0)
         if height > 0:
-            # Keep the smallest known file at each resolution so the user
-            # limit check does not reject a quality merely because another
-            # codec/format at the same resolution is larger.
             estimated[height] = min(estimated.get(height, size), size)
         if fmt.get("acodec") not in (None, "none"):
             progressive_best = max(progressive_best, size)
@@ -2835,7 +2847,15 @@ def _quality_selector(mode: str) -> str:
         return ""
     if mode.endswith("p") and mode[:-1].isdigit():
         height = int(mode[:-1])
-        return f"bv*[height<={height}]+ba/b[height<={height}]"
+        # Prefer separate video+audio, then video-only, then a
+        # progressive stream. This lets a 1080p request gracefully fall back
+        # to 720p/480p when that is the highest format exposed by the client.
+        return (
+            f"bv*[height<={height}]+ba/"
+            f"bv[height<={height}]/"
+            f"b[height<={height}]/"
+            f"best[height<={height}]"
+        )
     raise DownloadError("Unknown download mode.")
 
 
