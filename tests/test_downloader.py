@@ -4,6 +4,7 @@ from urllib.parse import urlsplit
 from app.downloader.detector import detect_platform
 from app.downloader.service import (
     _entry_video_format,
+    _facebook_video_page_fallback,
     _extract_profiles,
     _platform_from_url,
     _quality_selector,
@@ -91,6 +92,43 @@ class DownloaderRoutingTests(unittest.TestCase):
     def test_facebook_uses_browser_impersonation(self):
         profiles = _extract_profiles("https://www.facebook.com/reel/123")
         self.assertTrue(all(profile.get("impersonate") == "chrome" for profile in profiles))
+
+    def test_facebook_public_page_fallback_extracts_signed_progressive_urls(self):
+        import app.downloader.service as service
+
+        class FakeResponse:
+            status_code = 200
+            url = "https://www.facebook.com/example/videos/123456789/"
+            text = (
+                '{"video_id":"123456789",'
+                '"playable_url_quality_hd":"https:\\/\\/video.xx.fbcdn.net\\/v\\/hd.mp4?token=abc",'
+                '"playable_url":"https:\\/\\/video.xx.fbcdn.net\\/v\\/sd.mp4?token=def"}'
+            )
+            content = text.encode()
+
+        class FakeCurl:
+            @staticmethod
+            def get(*args, **kwargs):
+                return FakeResponse()
+
+        original = service.curl_requests
+        service.curl_requests = FakeCurl
+        try:
+            result = _facebook_video_page_fallback(
+                "https://www.facebook.com/share/v/ABC123/"
+            )
+        finally:
+            service.curl_requests = original
+
+        self.assertIsNotNone(result)
+        info, final_url, _ = result
+        self.assertEqual(final_url, "https://www.facebook.com/example/videos/123456789/")
+        self.assertEqual(info["id"], "123456789")
+        self.assertEqual(
+            [fmt["height"] for fmt in info["formats"]],
+            [1080, 480],
+        )
+        self.assertTrue(info["formats"][0]["url"].startswith("https://video.xx.fbcdn.net/"))
 
     def test_carousel_child_video_format_prefers_progressive(self):
         entry = {
