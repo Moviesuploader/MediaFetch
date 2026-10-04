@@ -311,8 +311,20 @@ def _extract_profiles(url: str) -> list[dict]:
             }
 
     if platform == "youtube":
-        for clients in (["default", "web_embedded"], ["default", "mweb"]):
-            youtube_profile = _base_opts()
+        # YouTube currently varies bot/PO-token enforcement by Innertube
+        # client. Keep the existing clients, then try clients that do not
+        # require a GVS PO token for many public videos. If a cookie jar is
+        # configured, apply it to every YouTube profile so extraction and the
+        # final download use the same session.
+        youtube_clients = (
+            ["default", "web_embedded"],
+            ["default", "mweb"],
+            ["android_vr"],
+            ["tv_simply"],
+            ["web_embedded"],
+        )
+        for clients in youtube_clients:
+            youtube_profile = _apply_cookie_policy(_base_opts(), url)
             youtube_profile["extractor_args"] = {
                 "youtube": {"player_client": clients},
             }
@@ -2397,6 +2409,15 @@ def _reddit_json_fallback(url: str) -> tuple[dict, str, dict] | None:
 
 def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
     last_error: Exception | None = None
+
+    # Threads: use the crawler/data-sjs resolver first. The installed
+    # yt-dlp-threads plugin and this resolver use the same current Meta
+    # server-rendered payload strategy; this avoids wasting time on yt-dlp's
+    # generic extractor/login-wall path.
+    if _platform_from_url(url) == "threads":
+        threads_media = _threads_crawler_fallback(url)
+        if threads_media:
+            return threads_media
 
     # Photo/carousel posts need child-specific media metadata. Do this before
     # yt-dlp/OpenGraph: OpenGraph exposes only the cover image and can make a
