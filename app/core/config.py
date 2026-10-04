@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     ytdlp_cookie_platforms: str = "youtube"
     ytdlp_max_retries: int = 1
     extraction_timeout_seconds: int = 30
+    # Per-attempt timeout for YouTube player-client fallbacks. Keep this short
+    # so a blocked datacenter IP does not leave the Telegram request hanging.
+    youtube_profile_timeout_seconds: int = 12
     download_timeout_seconds: int = 900
     max_download_bytes: int = 52428800
 
