@@ -76,7 +76,7 @@ def _yt_dlp_plugin_dirs() -> list[str]:
 
 
 def _base_opts() -> dict:
-    return {
+    opts = {
         "quiet": True,
         "no_warnings": True,
         "restrictfilenames": True,
@@ -111,6 +111,7 @@ def _base_opts() -> dict:
     if plugin_dirs:
         opts["plugin_dirs"] = plugin_dirs
 
+    return opts
 
 def _cookie_platforms() -> set[str]:
     return {
