@@ -147,6 +147,10 @@ class Storage:
             doc = self._db.users.find_one({"user_id": user_id}) or {}
             plan = str(doc.get("plan") or "").lower().strip()
             until = float(doc.get("plan_until", doc.get("premium_until", 0)) or 0)
+            # Backward compatibility: old premium records become Bronze until
+            # their existing premium_until timestamp expires.
+            if not plan and float(doc.get("premium_until", 0) or 0) > now:
+                plan = "bronze"
         else:
             with self._lock:
                 item = self._plans.get(user_id, {})
