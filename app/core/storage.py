@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 try:
-    from pymongo import MongoClient
+    from pymongo import MongoClient, ReturnDocument
 except Exception:  # pragma: no cover
     MongoClient = None
 
@@ -278,6 +278,7 @@ class Storage:
             doc = self._db.payments.find_one_and_update(
                 {"payment_id": payment_id, "status": "pending"},
                 {"$set": {"status": "approved", "verified_at": now, "verified_by": int(verified_by)}},
+                return_document=ReturnDocument.AFTER,
             )
             if not doc:
                 raise ValueError("Payment is no longer pending")
@@ -302,6 +303,7 @@ class Storage:
             doc = self._db.payments.find_one_and_update(
                 {"payment_id": payment_id, "status": "pending"},
                 {"$set": {"status": "rejected", "verified_at": now, "verified_by": int(verified_by)}},
+                return_document=ReturnDocument.AFTER,
             )
             if not doc:
                 raise ValueError("Payment is no longer pending")
