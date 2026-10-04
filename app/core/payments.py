@@ -15,16 +15,17 @@ _UTR_RE = re.compile(r"^[A-Za-z0-9]{6,35}$")
 
 
 def payment_config() -> dict[str, Any]:
+    saved = storage.payment_settings()
     return {
-        "upi_id": str(settings.payment_upi_id or "").strip(),
-        "currency": str(settings.payment_currency or "INR").strip().upper(),
+        "upi_id": str(saved.get("upi_id") or "").strip(),
+        "currency": str(saved.get("currency") or "INR").strip().upper(),
         "prices": {
-            "bronze": max(0, int(settings.bronze_price)),
-            "platinum": max(0, int(settings.platinum_price)),
-            "diamond": max(0, int(settings.diamond_price)),
+            "bronze": max(0, int(saved.get("bronze_price", 0))),
+            "platinum": max(0, int(saved.get("platinum_price", 0))),
+            "diamond": max(0, int(saved.get("diamond_price", 0))),
         },
-        "duration_days": max(1, int(settings.payment_duration_days)),
-        "qr_url": str(settings.payment_qr_url or "").strip(),
+        "duration_days": max(1, int(saved.get("duration_days", 30))),
+        "qr_url": str(saved.get("qr_url") or "").strip(),
     }
 
 
