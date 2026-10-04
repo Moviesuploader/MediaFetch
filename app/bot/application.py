@@ -88,7 +88,7 @@ def build_application() -> Application:
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url)
     )
     application.add_handler(
-        MessageHandler(filters.FORWARDED & ~filters.COMMAND, admin_message_router)
+        MessageHandler(filters.ALL & ~filters.COMMAND, admin_message_router)
     )
     application.add_error_handler(_error_handler)
     return application
