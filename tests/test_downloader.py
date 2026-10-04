@@ -46,7 +46,7 @@ class DownloaderRoutingTests(unittest.TestCase):
 
     def test_ejs_runtime_is_enabled(self):
         profiles = _extract_profiles("https://www.youtube.com/watch?v=test")
-        self.assertEqual(profiles[0]["js_runtimes"], ["deno"])
+        self.assertEqual(profiles[0]["js_runtimes"], {"deno": {}})
         self.assertIn("ejs:github", profiles[0]["remote_components"])
 
     def test_youtube_platform_profiles(self):
@@ -69,7 +69,7 @@ class DownloaderRoutingTests(unittest.TestCase):
     def test_quality_selector(self):
         self.assertEqual(_quality_selector("best"), "bv*+ba/b")
         self.assertEqual(_quality_selector("audio"), "bestaudio/best")
-        self.assertIn("height<=?720", _quality_selector("720p"))
+        self.assertIn("height<=720", _quality_selector("720p"))
 
     def test_url_variant_is_parseable(self):
         for url in _url_variants("https://www.threads.com/@u/post/123"):
