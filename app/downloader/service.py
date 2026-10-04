@@ -334,6 +334,20 @@ def _extract_profiles(url: str) -> list[dict]:
                 }
             profiles.append(youtube_profile)
 
+        # A stale/expired exported cookie jar can itself trigger YouTube's
+        # authentication challenge. Keep one clean public-client fallback so
+        # public videos can still work when the configured cookie session is
+        # no longer accepted. This does not bypass private/auth-only content.
+        clean_youtube = _base_opts()
+        clean_youtube["extractor_args"] = {
+            "youtube": {"player_client": ["web_embedded"]},
+        }
+        if settings.youtube_pot_provider_url:
+            clean_youtube["extractor_args"]["youtubepot-bgutilhttp"] = {
+                "base_url": settings.youtube_pot_provider_url.rstrip("/")
+            }
+        profiles.append(clean_youtube)
+
     if platform == "facebook":
         # Facebook serves a different response to plain Python HTTP clients
         # when authenticated cookies are present. yt-dlp's Facebook extractor
