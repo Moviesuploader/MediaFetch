@@ -321,16 +321,25 @@ def _extract_profiles(url: str) -> list[dict]:
         # Keeping each attempt to one explicit client also avoids the default
         # multi-client chain repeatedly hitting YouTube bot checks.
         public_clients = (
-            ["android_vr"],
-            ["tv_simply"],
-            ["web_embedded"],
+            # Current yt-dlp guidance: tv does not require a GVS PO token.
+            ["tv"],
+            # web_safari can expose HLS formats that currently avoid GVS POT.
+            ["web_safari"],
+            # Recommended current client when paired with a PO-token provider.
             ["mweb"],
+            # No-POT fallback, but only for embeddable videos.
+            ["web_embedded"],
+            # No-POT fallback for normal public videos.
+            ["android_vr"],
         )
         for clients in public_clients:
             youtube_profile = _base_opts()
-            youtube_profile["extractor_args"] = {
-                "youtube": {"player_client": clients},
-            }
+            youtube_args = {"player_client": clients}
+            if clients in (["mweb"], ["web_safari"]):
+                # Force provider lookup instead of waiting for yt-dlp's
+                # auto-policy to decide whether a token is needed.
+                youtube_args["fetch_pot"] = ["always"]
+            youtube_profile["extractor_args"] = {"youtube": youtube_args}
             if settings.youtube_pot_provider_url:
                 youtube_profile["extractor_args"]["youtubepot-bgutilhttp"] = {
                     "base_url": settings.youtube_pot_provider_url.rstrip("/")
@@ -338,7 +347,9 @@ def _extract_profiles(url: str) -> list[dict]:
             profiles.append(youtube_profile)
 
         youtube_clients = (
-            ["default", "web_embedded"],
+            # Authenticated embedded client is a useful no-POT fallback.
+            ["tv_embedded"],
+            ["default", "web_safari"],
             ["default", "mweb"],
             ["android_vr"],
             ["tv_simply"],
