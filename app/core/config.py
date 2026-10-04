@@ -54,7 +54,11 @@ class Settings(BaseSettings):
     # Bundled local bgutil HTTP provider defaults to localhost:4416.
     # Operators can point this at an external provider when needed.
     youtube_pot_provider_enabled: bool = True
+    # "script" avoids a resident Deno POT server on small Koyeb instances.
+    # "http" keeps the old always-running provider behavior.
+    youtube_pot_provider_mode: str = "script"
     youtube_pot_provider_url: str = "http://127.0.0.1:4416"
+    youtube_pot_provider_home: str = "/opt/bgutil-ytdlp-pot-provider/server"
 
     # Operational Telegram channels. Accept numeric chat IDs or @usernames.
     dump_channel_id: str = ""
