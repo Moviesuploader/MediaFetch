@@ -557,7 +557,13 @@ async def _handle_payment_utr(update: Update, context: ContextTypes.DEFAULT_TYPE
         return True
     _PENDING_PAYMENT_PLAN.pop(user_id, None)
     cfg = payment_config()
-    for admin_id in settings.admin_id_set:
+    notify_admins = set(settings.admin_id_set)
+    try:
+        if settings.owner_id:
+            notify_admins.add(int(str(settings.owner_id).strip()))
+    except (TypeError, ValueError):
+        pass
+    for admin_id in notify_admins:
         try:
             await context.bot.send_message(
                 chat_id=admin_id,
