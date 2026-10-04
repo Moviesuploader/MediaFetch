@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import logging
 import re
 import secrets
@@ -111,6 +112,73 @@ def _media_kind(path: Path) -> str:
     if suffix in {".jpg", ".jpeg", ".png", ".webp"}:
         return "photo"
     return "document"
+
+
+async def _log_link(context: ContextTypes.DEFAULT_TYPE, user_id: int, username: str | None,
+                   platform: str, url: str, status: str = "⏳ Processing") :
+    channel = (settings.links_log_channel_id or "").strip()
+    if not channel:
+        return None
+    user_label = f"@{username}" if username else str(user_id)
+    text = (
+        f"🔗 <b>MediaFetch Link Log</b>\n"
+        f"👤 <b>User:</b> {html.escape(user_label)} (<code>{user_id}</code>)\n"
+        f"🌐 <b>Platform:</b> {html.escape(platform)}\n"
+        f"📌 <b>Status:</b> {html.escape(status)}\n"
+        f"🔗 <b>URL:</b> <code>{html.escape(url)}</code>"
+    )
+    try:
+        return await context.bot.send_message(chat_id=channel, text=text, parse_mode="HTML")
+    except Exception as exc:
+        logger.warning("Links log channel send failed error_type=%s error=%s", type(exc).__name__, exc)
+        return None
+
+
+async def _update_link_log(context: ContextTypes.DEFAULT_TYPE, log_message, user_id: int,
+                           username: str | None, platform: str, url: str, status: str) -> None:
+    if log_message is None:
+        return
+    user_label = f"@{username}" if username else str(user_id)
+    text = (
+        f"🔗 <b>MediaFetch Link Log</b>\n"
+        f"👤 <b>User:</b> {html.escape(user_label)} (<code>{user_id}</code>)\n"
+        f"🌐 <b>Platform:</b> {html.escape(platform)}\n"
+        f"📌 <b>Status:</b> {html.escape(status)}\n"
+        f"🔗 <b>URL:</b> <code>{html.escape(url)}</code>"
+    )
+    try:
+        await context.bot.edit_message_text(
+            chat_id=log_message.chat_id,
+            message_id=log_message.message_id,
+            text=text,
+            parse_mode="HTML",
+        )
+    except Exception as exc:
+        logger.warning("Links log channel update failed error_type=%s", type(exc).__name__)
+
+
+async def _dump_messages(context: ContextTypes.DEFAULT_TYPE, messages: list, user_id: int,
+                         username: str | None, platform: str, url: str) -> None:
+    channel = (settings.dump_channel_id or "").strip()
+    if not channel or not messages:
+        return
+    user_label = f"@{username}" if username else str(user_id)
+    header = (
+        f"📥 <b>MediaFetch Dump</b>\n"
+        f"👤 <b>User:</b> {html.escape(user_label)} (<code>{user_id}</code>)\n"
+        f"🌐 <b>Platform:</b> {html.escape(platform)}\n"
+        f"🔗 <code>{html.escape(url)}</code>"
+    )
+    try:
+        await context.bot.send_message(chat_id=channel, text=header, parse_mode="HTML")
+        for sent in messages:
+            await context.bot.copy_message(
+                chat_id=channel,
+                from_chat_id=sent.chat_id,
+                message_id=sent.message_id,
+            )
+    except Exception as exc:
+        logger.warning("Dump channel send failed error_type=%s error=%s", type(exc).__name__, exc)
 
 
 async def _send_media_message(message, path: Path | None = None, file_id: str | None = None,
@@ -408,6 +476,10 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
         return
 
+    link_log_message = await _log_link(
+        context, user_id, username, platform, url, "⏳ Inspecting"
+    )
+
     used = await asyncio.to_thread(storage.usage_today, user_id)
     limit = _limit_for(user_id)
     if used >= limit:
@@ -441,6 +513,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             current = _PENDING_REQUESTS.get(user_id)
             if current and current[0] == request_id:
                 _PENDING_REQUESTS.pop(user_id, None)
+        await _update_link_log(context, link_log_message, user_id, username, platform, url, "❌ Inspection timeout")
         await status.edit_text(
             "⏱️ Media inspection timed out after 60 seconds. "
             "The source may be slow, restricted, or temporarily unavailable. Please try again."
@@ -452,11 +525,16 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             current = _PENDING_REQUESTS.get(user_id)
             if current and current[0] == request_id:
                 _PENDING_REQUESTS.pop(user_id, None)
+        await _update_link_log(context, link_log_message, user_id, username, platform, url, "❌ Inspection failed")
         await status.edit_text(
             "❌ I couldn't inspect this URL. It may be private, restricted, "
             "rate-limited, or temporarily unavailable."
         )
         return
+
+    await _update_link_log(
+        context, link_log_message, user_id, username, platform, url, "🔎 Inspected"
+    )
 
     async with _PENDING_LOCK:
         current = _PENDING_REQUESTS.get(user_id)
@@ -713,6 +791,7 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         upload_task = asyncio.create_task(upload_indicator())
         file_ids: list[str] = []
+        sent_messages_for_dump: list = []
         try:
             photo_paths = [
                 item for item in paths
@@ -732,6 +811,7 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     paths=photo_paths,
                     caption=caption,
                 )
+                sent_messages_for_dump.extend(sent_messages)
                 for sent in sent_messages:
                     if sent.photo:
                         file_ids.append(sent.photo[-1].file_id)
@@ -750,6 +830,7 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         kind=kind,
                         caption=caption,
                     )
+                    sent_messages_for_dump.append(sent)
                     if kind == "video" and sent.video:
                         file_ids.append(sent.video.file_id)
                     elif kind == "photo" and sent.photo:
@@ -778,6 +859,11 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             (info.title if isinstance(info, MediaInfo) else "Media"),
             mode, True, size_bytes,
         )
+        await _dump_messages(context, sent_messages_for_dump, user_id, username, platform, url)
+        await _update_link_log(
+            context, link_log_message, user_id, username, platform, url,
+            f"✅ Downloaded • {mode} • {size_bytes / (1024 * 1024):.1f} MB"
+        )
         await status.delete()
     except DownloadError as exc:
         logger.warning("Download failed user=%s platform=%s mode=%s error=%s", user_id, platform, mode, exc)
@@ -787,6 +873,7 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             (info.title if isinstance(info, MediaInfo) else "Media"),
             mode, False, 0,
         )
+        await _update_link_log(context, link_log_message, user_id, username, platform, url, "❌ Download failed")
         if status:
             await status.edit_text(
                 "❌ <b>Download failed.</b>\n"
