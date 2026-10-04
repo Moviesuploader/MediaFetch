@@ -79,7 +79,12 @@ class DownloaderRoutingTests(unittest.TestCase):
             12,
         )
         self.assertIn("plugin_dirs", profiles[0])
+        self.assertIn("youtubepot-bgutilscript", profiles[1]["extractor_args"])
 
+
+    def test_facebook_uses_browser_impersonation(self):
+        profiles = _extract_profiles("https://www.facebook.com/reel/123")
+        self.assertTrue(all(profile.get("impersonate") == "chrome" for profile in profiles))
 
     def test_tiktok_platform_profile(self):
         url = "https://www.tiktok.com/@user/video/123"
@@ -94,7 +99,10 @@ class DownloaderRoutingTests(unittest.TestCase):
     def test_quality_selector(self):
         self.assertEqual(_quality_selector("best"), "bv*+ba/b")
         self.assertEqual(_quality_selector("audio"), "bestaudio/best")
-        self.assertIn("height<=720", _quality_selector("720p"))
+        selector = _quality_selector("720p")
+        self.assertIn("height<=720", selector)
+        self.assertIn("bv[height<=720]", selector)
+        self.assertIn("b[height<=720]", selector)
 
     def test_url_variant_is_parseable(self):
         for url in _url_variants("https://www.threads.com/@u/post/123"):
