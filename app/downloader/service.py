@@ -58,6 +58,23 @@ class MediaInfo:
         return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
 
 
+def _yt_dlp_plugin_dirs() -> list[str]:
+    """Return explicit parent directories containing yt-dlp plugin namespaces.
+
+    The bgutil package is installed as a namespace package. Explicitly passing
+    its parent directory avoids environment-dependent plugin discovery in
+    containers and makes the loaded POT provider deterministic.
+    """
+    try:
+        import importlib.util
+
+        spec = importlib.util.find_spec("yt_dlp_plugins")
+        locations = list(spec.submodule_search_locations or []) if spec else []
+        return [str(Path(location).parent) for location in locations if Path(location).is_dir()]
+    except Exception:
+        return []
+
+
 def _base_opts() -> dict:
     return {
         "quiet": True,
@@ -89,6 +106,10 @@ def _base_opts() -> dict:
         "js_runtimes": {"deno": {}},
         "remote_components": {"ejs:github"},
     }
+
+    plugin_dirs = _yt_dlp_plugin_dirs()
+    if plugin_dirs:
+        opts["plugin_dirs"] = plugin_dirs
 
 
 def _cookie_platforms() -> set[str]:
@@ -311,55 +332,72 @@ def _extract_profiles(url: str) -> list[dict]:
             }
 
     if platform == "youtube":
-        # Keep the YouTube chain short and deterministic. On a datacenter IP,
-        # repeatedly trying every client only delays the user and can make the
-        # bot appear hung. The current yt-dlp guide recommends mweb + a POT
-        # provider, while tv/android_vr remain useful no-POT fallbacks.
-        public_clients = (
-            ["tv"],
-            ["mweb"],
-            ["web_safari"],
-            ["android_vr"],
-        )
+        # Current yt-dlp guidance recommends mweb + a PO-token provider.
+        # Datacenter IPs may still require account cookies, so try the
+        # configured YouTube cookie jar with mweb BEFORE clean fallbacks.
         profile_timeout = max(8, min(settings.youtube_profile_timeout_seconds, 20))
-        for clients in public_clients:
-            youtube_profile = _base_opts()
+        provider_mode = settings.youtube_pot_provider_mode.strip().lower()
+        cookie_opts = _apply_cookie_policy(_base_opts(), url)
+        has_cookies = "cookiefile" in cookie_opts
+
+        def add_youtube_profile(
+            clients: list[str],
+            *,
+            cookies: bool = False,
+            fetch_pot: bool = False,
+            skip_webpage: bool = False,
+        ) -> None:
+            youtube_profile = _apply_cookie_policy(_base_opts(), url) if cookies else _base_opts()
             youtube_profile["socket_timeout"] = profile_timeout
             youtube_profile["timeout"] = profile_timeout
-            youtube_args = {"player_client": clients}
-            if clients == ["mweb"]:
-                # Force the bundled bgutil provider to participate and expose
-                # provider diagnostics in yt-dlp's trace output.
+            youtube_args: dict[str, object] = {"player_client": clients}
+            if fetch_pot:
                 youtube_args["fetch_pot"] = ["always"]
                 youtube_args["pot_trace"] = ["true"]
+
+            # Skipping the initial webpage request is a useful final fallback
+            # for cloud IPs that are blocked before Innertube player requests.
+            if skip_webpage:
+                youtube_args["player_skip"] = ["webpage"]
+
             youtube_profile["extractor_args"] = {"youtube": youtube_args}
-            if settings.youtube_pot_provider_url:
-                youtube_profile["extractor_args"]["youtubepot-bgutilhttp"] = {
-                    "base_url": settings.youtube_pot_provider_url.rstrip("/")
-                }
+
+            if fetch_pot and settings.youtube_pot_provider_enabled:
+                if provider_mode == "script":
+                    youtube_profile["extractor_args"]["youtubepot-bgutilscript"] = {
+                        "server_home": settings.youtube_pot_provider_home.rstrip("/")
+                    }
+                elif settings.youtube_pot_provider_url:
+                    youtube_profile["extractor_args"]["youtubepot-bgutilhttp"] = {
+                        "base_url": settings.youtube_pot_provider_url.rstrip("/")
+                    }
             profiles.append(youtube_profile)
 
-        # Cookie-backed clients are only useful when a real YouTube cookie jar
-        # is present. Do not spend another 30s on cookie profiles when none is
-        # configured, and avoid redundant default/mweb retries after the public
-        # chain has already failed.
-        youtube_clients = (
-            ["tv_embedded"],
-            ["web_embedded"],
-        )
-        for clients in youtube_clients:
-            youtube_profile = _apply_cookie_policy(_base_opts(), url)
-            if "cookiefile" not in youtube_profile:
-                continue
-            youtube_profile["socket_timeout"] = profile_timeout
-            youtube_profile["timeout"] = profile_timeout
-            youtube_args = {"player_client": clients}
-            youtube_profile["extractor_args"] = {"youtube": youtube_args}
-            if settings.youtube_pot_provider_url:
-                youtube_profile["extractor_args"]["youtubepot-bgutilhttp"] = {
-                    "base_url": settings.youtube_pot_provider_url.rstrip("/")
-                }
-            profiles.append(youtube_profile)
+        # 1) Recommended path: authenticated mweb + per-video POT.
+        if has_cookies:
+            add_youtube_profile(["mweb"], cookies=True, fetch_pot=True)
+
+        # 2) Clean mweb + per-video POT. Useful for public videos when the
+        # exported account cookie has gone stale.
+        add_youtube_profile(["mweb"], fetch_pot=True)
+
+        # 3) web_safari can expose HLS formats that currently avoid GVS POT.
+        add_youtube_profile(["web_safari"], cookies=has_cookies, fetch_pot=True)
+
+        # 4) No-POT clients. Keep these after mweb so they don't hide a
+        # provider/cookie failure in the primary path.
+        add_youtube_profile(["tv"], cookies=False)
+        add_youtube_profile(["android_vr"], cookies=False)
+
+        # 5) Cloud-IP fallback: skip the initial webpage request. This is
+        # intentionally last because it can reduce metadata completeness.
+        add_youtube_profile(["tv", "web_embedded"], skip_webpage=True)
+
+        # Account-authenticated embedded clients remain useful for restricted
+        # videos, but only add them when a real cookie jar exists.
+        if has_cookies:
+            add_youtube_profile(["tv_embedded"], cookies=True)
+            add_youtube_profile(["web_embedded"], cookies=True)
 
     if platform == "facebook":
         # Facebook serves a different response to plain Python HTTP clients
