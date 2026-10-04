@@ -34,7 +34,7 @@ class Storage:
                 self._db.users.create_index("user_id", unique=True)
                 self._db.usage.create_index([("user_id", 1), ("day", 1)], unique=True)
                 self._db.events.create_index("created_at")
-            self._db.history.create_index([("user_id", 1), ("created_at", -1)])
+                self._db.history.create_index([("user_id", 1), ("created_at", -1)])
         except Exception:
             self._client = None
             self._db = None
@@ -167,6 +167,20 @@ class Storage:
 
     def is_premium(self, user_id: int) -> bool:
         return bool(self.plan_info(user_id).get("active"))
+
+    def daily_limit(self, user_id: int, is_admin: bool = False) -> int:
+        """Return the effective daily download limit; 0 means unlimited."""
+        if is_admin:
+            return 0
+        from app.core.config import settings
+        plan = str(self.plan_info(user_id).get("plan") or "free").lower()
+        values = {
+            "free": int(settings.free_daily_limit),
+            "bronze": int(settings.bronze_daily_limit),
+            "platinum": int(settings.platinum_daily_limit),
+            "diamond": int(settings.diamond_daily_limit),
+        }
+        return max(0, values.get(plan, values["free"]))
 
     def record_event(
         self,
