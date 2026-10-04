@@ -771,6 +771,9 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     request_id, mode = parts[1], parts[2]
 
     user_id = update.effective_user.id if update.effective_user else query.message.chat_id
+    # Safe defaults ensure a downloader exception cannot be masked by logging.
+    username = update.effective_user.username if update.effective_user else None
+    link_log_message = None
     async with _PENDING_LOCK:
         pending = _PENDING_REQUESTS.get(user_id)
         if not pending or pending[0] != request_id:
