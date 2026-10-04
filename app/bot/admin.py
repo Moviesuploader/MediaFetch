@@ -264,18 +264,20 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if connected:
             account = "Premium" if mtproto_uploader.account_is_premium else "Standard"
             ceiling = mtproto_uploader.telegram_single_file_limit_mb
-            account_text = f"{account} • {ceiling} MB Telegram single-file ceiling"
+            account_text = f"{account} • {ceiling} MB MTProto ceiling"
         else:
             account_text = "Not connected"
+        bot_limit = int(settings.local_bot_api_max_upload_mb) if settings.telegram_api_base_url else 50
+        bot_text = f"Local Bot API ≤{bot_limit} MB" if settings.telegram_api_base_url else "Cloud Bot API ≤50 MB"
         await query.message.edit_text(
             "🚀 <b>Telegram Upload Engine</b>\n\n"
-            f"🤖 Bot API: <b>≤50 MB</b> cloud limit\n"
+            f"🤖 Bot API: <b>{bot_text}</b>\n"
             f"🔐 MTProto session: <b>{'Configured' if configured else 'Not configured'}</b>\n"
             f"🟢 Connection: <b>{'Ready' if connected else 'Offline'}</b>\n"
-            f"📦 Account transport: <b>{account_text}</b>\n\n"
-            "Files above the account's Telegram single-file ceiling are automatically "
-            "split into sequential parts. MediaFetch plan limits are separate from "
-            "Telegram transport limits.",
+            f"📦 Account transport: <b>{account_text}</b>\n"
+            f"✂️ MediaFetch split size: <b>{settings.large_upload_split_mb} MB</b>\n\n"
+            "Files above the configured 2 GB split size are sent sequentially as "
+            "parts. Plan limits are separate from Telegram transport limits.",
             parse_mode="HTML", reply_markup=_back_keyboard())
         return
 
