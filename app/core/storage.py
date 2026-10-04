@@ -253,6 +253,56 @@ class Storage:
             self._file_limits[role] = mb
             return dict(self._file_limits)
 
+    def channel_config(self) -> dict[str, str]:
+        defaults = {"dump": "", "links": ""}
+        if self._db is not None:
+            doc = self._db.settings.find_one({"key": "channel_config"}) or {}
+            return {key: str(doc.get(key, "") or "") for key in defaults}
+        with self._lock:
+            return dict(getattr(self, "_channel_config", defaults))
+
+    def set_channel_config(self, kind: str, chat_id: str | int | None) -> dict[str, str]:
+        kind = kind.lower().strip()
+        if kind not in {"dump", "links"}:
+            raise ValueError("channel kind must be dump or links")
+        value = str(chat_id or "").strip()
+        if self._db is not None:
+            self._db.settings.update_one(
+                {"key": "channel_config"},
+                {"$set": {"key": "channel_config", kind: value}},
+                upsert=True,
+            )
+            return self.channel_config()
+        with self._lock:
+            current = dict(getattr(self, "_channel_config", {"dump": "", "links": ""}))
+            current[kind] = value
+            self._channel_config = current
+            return dict(current)
+
+    def concurrent_download_limit(self) -> int:
+        default = max(1, min(int(getattr(__import__("app.core.config", fromlist=["settings"]).settings, "max_concurrent_downloads", 1)), 20))
+        if self._db is not None:
+            doc = self._db.settings.find_one({"key": "runtime_limits"}) or {}
+            try:
+                return max(1, min(int(doc.get("downloads", default)), 20))
+            except (TypeError, ValueError):
+                return default
+        with self._lock:
+            return max(1, min(int(getattr(self, "_concurrent_download_limit", default)), 20))
+
+    def set_concurrent_download_limit(self, limit: int) -> int:
+        limit = max(1, min(int(limit), 20))
+        if self._db is not None:
+            self._db.settings.update_one(
+                {"key": "runtime_limits"},
+                {"$set": {"key": "runtime_limits", "downloads": limit}},
+                upsert=True,
+            )
+            return self.concurrent_download_limit()
+        with self._lock:
+            self._concurrent_download_limit = limit
+            return limit
+
     def set_maintenance(self, enabled: bool) -> None:
         if self._db is not None:
             self._db.settings.update_one({"key": "maintenance"}, {"$set": {"key": "maintenance", "enabled": enabled}}, upsert=True)
