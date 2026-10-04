@@ -60,12 +60,21 @@ class DownloaderRoutingTests(unittest.TestCase):
         ]
         self.assertEqual(
             public_clients,
-            [["tv"], ["web_safari"], ["mweb"], ["web_embedded"]],
+            [["tv"], ["mweb"], ["web_safari"], ["android_vr"]],
         )
         self.assertEqual(
-            profiles[3]["extractor_args"]["youtube"]["fetch_pot"],
+            profiles[2]["extractor_args"]["youtube"]["fetch_pot"],
             ["always"],
         )
+        self.assertEqual(
+            profiles[2]["extractor_args"]["youtube"]["pot_trace"],
+            ["true"],
+        )
+        self.assertEqual(
+            profiles[1]["socket_timeout"],
+            12,
+        )
+
 
     def test_tiktok_platform_profile(self):
         url = "https://www.tiktok.com/@user/video/123"
