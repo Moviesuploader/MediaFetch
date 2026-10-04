@@ -217,10 +217,10 @@ async def _send_media_message(message, path: Path | None = None, file_id: str | 
                               kind: str = "document", caption: str = ""):
     if file_id:
         if kind == "video":
-            return await message.reply_video(video=file_id, caption=caption, supports_streaming=True)
+            return await message.reply_video(video=file_id, caption=caption, parse_mode="HTML", supports_streaming=True)
         if kind == "photo":
-            return await message.reply_photo(photo=file_id, caption=caption)
-        return await message.reply_document(document=file_id, caption=caption)
+            return await message.reply_photo(photo=file_id, caption=caption, parse_mode="HTML")
+        return await message.reply_document(document=file_id, caption=caption, parse_mode="HTML")
 
     if path is None:
         raise ValueError("path or file_id is required")
@@ -248,6 +248,7 @@ async def _send_media_message(message, path: Path | None = None, file_id: str | 
                 return await message.reply_video(
                     video=media,
                     caption=caption,
+                    parse_mode="HTML",
                     supports_streaming=True,
                     thumbnail=thumbnail_file,
                 )
@@ -338,7 +339,7 @@ async def _send_photo_album(
         path = paths[0]
         try:
             with path.open("rb") as photo:
-                return [await message.reply_photo(photo=photo, caption=caption)]
+                return [await message.reply_photo(photo=photo, caption=caption, parse_mode="HTML")]
         except BadRequest as exc:
             telegram_error = str(exc).lower()
             if not any(code in telegram_error for code in ("image_process_failed", "photo_invalid_dimensions")):
@@ -419,9 +420,9 @@ async def _send_media_album(
             elif media:
                 item = media[0]
                 if isinstance(item, InputMediaPhoto):
-                    sent.append(await message.reply_photo(photo=item.media, caption=item.caption))
+                    sent.append(await message.reply_photo(photo=item.media, caption=item.caption, parse_mode="HTML"))
                 else:
-                    sent.append(await message.reply_video(video=item.media, caption=item.caption, supports_streaming=True))
+                    sent.append(await message.reply_video(video=item.media, caption=item.caption, parse_mode="HTML", supports_streaming=True))
         return sent
 
     if not paths:
@@ -454,13 +455,14 @@ async def _send_media_album(
                 handle = stack.enter_context(path.open("rb"))
                 item_caption = caption if start == 0 and index == 0 else None
                 if kind == "photo":
-                    media.append(InputMediaPhoto(media=handle, caption=item_caption))
+                    media.append(InputMediaPhoto(media=handle, caption=item_caption, parse_mode="HTML"))
                 else:
                     # Omit per-video FFmpeg thumbnails in albums to save CPU/RAM
                     # on Koyeb free; Telegram can generate a preview itself.
                     media.append(InputMediaVideo(
                         media=handle,
                         caption=item_caption,
+                        parse_mode="HTML",
                         supports_streaming=True,
                     ))
             if len(media) >= 2:
