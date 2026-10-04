@@ -311,34 +311,27 @@ def _extract_profiles(url: str) -> list[dict]:
             }
 
     if platform == "youtube":
-        # Public YouTube downloads must not depend on an exported cookie jar.
-        # A stale/expired account cookie can turn an otherwise public video into
-        # "Sign in to confirm you're not a bot" or "The page needs to be
-        # reloaded". Try clean public clients first, then retain the existing
-        # cookie-backed clients for genuinely account-gated media.
-        # Prefer clients that currently avoid GVS PO-token requirements,
-        # then use mweb where the bundled bgutil provider can supply a token.
-        # Keeping each attempt to one explicit client also avoids the default
-        # multi-client chain repeatedly hitting YouTube bot checks.
+        # Keep the YouTube chain short and deterministic. On a datacenter IP,
+        # repeatedly trying every client only delays the user and can make the
+        # bot appear hung. The current yt-dlp guide recommends mweb + a POT
+        # provider, while tv/android_vr remain useful no-POT fallbacks.
         public_clients = (
-            # Current yt-dlp guidance: tv does not require a GVS PO token.
             ["tv"],
-            # web_safari can expose HLS formats that currently avoid GVS POT.
-            ["web_safari"],
-            # Recommended current client when paired with a PO-token provider.
             ["mweb"],
-            # No-POT fallback, but only for embeddable videos.
-            ["web_embedded"],
-            # No-POT fallback for normal public videos.
+            ["web_safari"],
             ["android_vr"],
         )
+        profile_timeout = max(8, min(settings.youtube_profile_timeout_seconds, 20))
         for clients in public_clients:
             youtube_profile = _base_opts()
+            youtube_profile["socket_timeout"] = profile_timeout
+            youtube_profile["timeout"] = profile_timeout
             youtube_args = {"player_client": clients}
-            if clients in (["mweb"], ["web_safari"]):
-                # Force provider lookup instead of waiting for yt-dlp's
-                # auto-policy to decide whether a token is needed.
+            if clients == ["mweb"]:
+                # Force the bundled bgutil provider to participate and expose
+                # provider diagnostics in yt-dlp's trace output.
                 youtube_args["fetch_pot"] = ["always"]
+                youtube_args["pot_trace"] = ["true"]
             youtube_profile["extractor_args"] = {"youtube": youtube_args}
             if settings.youtube_pot_provider_url:
                 youtube_profile["extractor_args"]["youtubepot-bgutilhttp"] = {
@@ -346,20 +339,21 @@ def _extract_profiles(url: str) -> list[dict]:
                 }
             profiles.append(youtube_profile)
 
+        # Cookie-backed clients are only useful when a real YouTube cookie jar
+        # is present. Do not spend another 30s on cookie profiles when none is
+        # configured, and avoid redundant default/mweb retries after the public
+        # chain has already failed.
         youtube_clients = (
-            # Authenticated embedded client is a useful no-POT fallback.
             ["tv_embedded"],
-            ["default", "web_safari"],
-            ["default", "mweb"],
-            ["android_vr"],
-            ["tv_simply"],
             ["web_embedded"],
         )
         for clients in youtube_clients:
             youtube_profile = _apply_cookie_policy(_base_opts(), url)
+            if "cookiefile" not in youtube_profile:
+                continue
+            youtube_profile["socket_timeout"] = profile_timeout
+            youtube_profile["timeout"] = profile_timeout
             youtube_args = {"player_client": clients}
-            if clients in (["default", "web_safari"], ["default", "mweb"]):
-                youtube_args["fetch_pot"] = ["always"]
             youtube_profile["extractor_args"] = {"youtube": youtube_args}
             if settings.youtube_pot_provider_url:
                 youtube_profile["extractor_args"]["youtubepot-bgutilhttp"] = {
@@ -2453,6 +2447,11 @@ def _reddit_json_fallback(url: str) -> tuple[dict, str, dict] | None:
 
 def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
     last_error: Exception | None = None
+    extraction_deadline = (
+        time.monotonic() + max(10, settings.extraction_timeout_seconds)
+        if _platform_from_url(url) == "youtube"
+        else None
+    )
 
     # Threads: use the crawler/data-sjs resolver first. The installed
     # yt-dlp-threads plugin and this resolver use the same current Meta
@@ -2473,6 +2472,10 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
 
     for candidate in _url_variants(url):
         for profile in _extract_profiles(candidate):
+            if extraction_deadline is not None and time.monotonic() >= extraction_deadline:
+                raise DownloadError(
+                    "YouTube extraction timed out while checking the available player clients."
+                )
             try:
                 opts = dict(profile)
                 opts["noplaylist"] = True
