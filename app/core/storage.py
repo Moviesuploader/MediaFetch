@@ -191,6 +191,38 @@ class Storage:
         return max(0, values.get(plan, values["free"]))
 
 
+    def payment_settings(self) -> dict[str, Any]:
+        from app.core.config import settings
+        defaults = {
+            "upi_id": str(settings.payment_upi_id or ""),
+            "currency": str(settings.payment_currency or "INR"),
+            "bronze_price": int(settings.bronze_price),
+            "platinum_price": int(settings.platinum_price),
+            "diamond_price": int(settings.diamond_price),
+            "duration_days": max(1, int(settings.payment_duration_days)),
+            "qr_url": str(settings.payment_qr_url or ""),
+        }
+        if self._db is not None:
+            doc = self._db.settings.find_one({"key": "payment_config"}) or {}
+            for key in defaults:
+                if key in doc:
+                    defaults[key] = doc[key]
+        return defaults
+
+    def set_payment_settings(self, values: dict[str, Any]) -> dict[str, Any]:
+        clean = {
+            "upi_id": str(values.get("upi_id", "")).strip(),
+            "currency": str(values.get("currency", "INR")).strip().upper() or "INR",
+            "bronze_price": max(0, int(values.get("bronze_price", 0))),
+            "platinum_price": max(0, int(values.get("platinum_price", 0))),
+            "diamond_price": max(0, int(values.get("diamond_price", 0))),
+            "duration_days": max(1, min(int(values.get("duration_days", 30)), 3650)),
+            "qr_url": str(values.get("qr_url", "")).strip(),
+        }
+        if self._db is not None:
+            self._db.settings.update_one({"key": "payment_config"}, {"$set": {"key": "payment_config", **clean}}, upsert=True)
+        return clean
+
     def create_payment(self, payment_id: str, user_id: int, plan: str, amount: int, currency: str, utr: str) -> dict[str, Any]:
         doc = {
             "payment_id": payment_id, "user_id": int(user_id), "plan": plan,
