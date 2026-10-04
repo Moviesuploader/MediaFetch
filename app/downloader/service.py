@@ -311,11 +311,28 @@ def _extract_profiles(url: str) -> list[dict]:
             }
 
     if platform == "youtube":
-        # YouTube currently varies bot/PO-token enforcement by Innertube
-        # client. Keep the existing clients, then try clients that do not
-        # require a GVS PO token for many public videos. If a cookie jar is
-        # configured, apply it to every YouTube profile so extraction and the
-        # final download use the same session.
+        # Public YouTube downloads must not depend on an exported cookie jar.
+        # A stale/expired account cookie can turn an otherwise public video into
+        # "Sign in to confirm you're not a bot" or "The page needs to be
+        # reloaded". Try clean public clients first, then retain the existing
+        # cookie-backed clients for genuinely account-gated media.
+        public_clients = (
+            ["default", "web_embedded"],
+            ["web_embedded"],
+            ["android_vr"],
+            ["tv_simply"],
+        )
+        for clients in public_clients:
+            youtube_profile = _base_opts()
+            youtube_profile["extractor_args"] = {
+                "youtube": {"player_client": clients},
+            }
+            if settings.youtube_pot_provider_url:
+                youtube_profile["extractor_args"]["youtubepot-bgutilhttp"] = {
+                    "base_url": settings.youtube_pot_provider_url.rstrip("/")
+                }
+            profiles.append(youtube_profile)
+
         youtube_clients = (
             ["default", "web_embedded"],
             ["default", "mweb"],
@@ -333,20 +350,6 @@ def _extract_profiles(url: str) -> list[dict]:
                     "base_url": settings.youtube_pot_provider_url.rstrip("/")
                 }
             profiles.append(youtube_profile)
-
-        # A stale/expired exported cookie jar can itself trigger YouTube's
-        # authentication challenge. Keep one clean public-client fallback so
-        # public videos can still work when the configured cookie session is
-        # no longer accepted. This does not bypass private/auth-only content.
-        clean_youtube = _base_opts()
-        clean_youtube["extractor_args"] = {
-            "youtube": {"player_client": ["web_embedded"]},
-        }
-        if settings.youtube_pot_provider_url:
-            clean_youtube["extractor_args"]["youtubepot-bgutilhttp"] = {
-                "base_url": settings.youtube_pot_provider_url.rstrip("/")
-            }
-        profiles.append(clean_youtube)
 
     if platform == "facebook":
         # Facebook serves a different response to plain Python HTTP clients
@@ -2820,9 +2823,11 @@ def _download_direct_video(
     max_file_mb: int,
     notify: Callable[[float, str], None],
     headers: dict[str, str] | None = None,
+    platform: str = "Media",
 ) -> Path:
-    """Stream an already-resolved progressive video URL directly to disk."""
-    target = Path(output_dir) / f"Threads-{media_id}.mp4"
+    """Stream an already-resolved progressive Meta CDN video URL directly."""
+    safe_platform = "".join(ch if ch.isalnum() else "-" for ch in platform).strip("-") or "Media"
+    target = Path(output_dir) / f"{safe_platform}-{media_id}.mp4"
     part = target.with_suffix(".mp4.part")
     request_headers = {
         "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
@@ -2849,7 +2854,7 @@ def _download_direct_video(
                 percent = (downloaded / total * 100) if total else 0
                 notify(percent, f"{percent:.0f}% • {downloaded / elapsed / (1024 * 1024):.1f} MB/s")
         if downloaded <= 0:
-            raise DownloadError("Threads returned an empty video.")
+            raise DownloadError(f"{platform} returned an empty video.")
         part.replace(target)
         notify(100, "ready")
         return target
@@ -2859,6 +2864,73 @@ def _download_direct_video(
         except OSError:
             pass
         raise
+
+
+def _download_structured_media(
+    info: dict,
+    output_dir: str,
+    max_file_mb: int,
+    notify: Callable[[float, str], None],
+    platform: str,
+) -> list[Path]:
+    """Download structured Meta media in original carousel order.
+
+    Threads/Instagram fallbacks can return a parent object with child entries.
+    Some children are videos and some are images. Never send those mixed entries
+    through the image downloader, because a video CDN response is valid media
+    but is intentionally rejected by the image signature validator.
+    """
+    entries = _image_entries(info)
+    if not entries:
+        raise DownloadError("No downloadable media was found in this post.")
+
+    paths: list[Path] = []
+    for index, entry in enumerate(entries, start=1):
+        direct_video = entry.get("_mediafetch_direct_video")
+        if isinstance(direct_video, str) and direct_video:
+            headers = entry.get("_mediafetch_direct_headers")
+            if not isinstance(headers, dict):
+                headers = {}
+            path = _download_direct_video(
+                direct_video,
+                output_dir,
+                str(entry.get("id") or f"media-{index}"),
+                max_file_mb,
+                lambda percent, detail, base=index - 1: notify(
+                    ((base + percent / 100) / len(entries)) * 100,
+                    f"media {index}/{len(entries)} • {detail}",
+                ),
+                headers,
+                platform=platform,
+            )
+            paths.append(path)
+            continue
+
+        image_url = _direct_image_url(entry)
+        thumbnail = _best_thumbnail(entry)
+        if not image_url:
+            image_url = (thumbnail or {}).get("url")
+        if not image_url:
+            raise DownloadError(
+                f"Structured media item {index}/{len(entries)} has no downloadable URL."
+            )
+
+        stem = entry.get("id") or info.get("id") or f"media-{index}"
+        title = entry.get("title") or info.get("title") or "media"
+        safe_title = "".join(
+            ch if ch.isalnum() or ch in "._-" else "_" for ch in str(title)
+        )[:60]
+        target = Path(output_dir) / f"{safe_title}-{index:02d}-{stem}"
+        image_headers = (thumbnail or {}).get("http_headers") or entry.get("http_headers")
+        for fmt in entry.get("formats") or []:
+            if isinstance(fmt, dict) and fmt.get("url") == image_url:
+                image_headers = fmt.get("http_headers") or image_headers
+                break
+        path = _download_image(image_url, target, max_file_mb, image_headers)
+        paths.append(path)
+        notify(index / len(entries) * 100, f"media {index}/{len(entries)}")
+
+    return paths
 
 
 
@@ -2966,17 +3038,44 @@ def _download_sync(
             selector = "bv+ba/b[vcodec!=none][ext=mp4]/b[vcodec!=none]" if platform == "facebook" else "bv*+ba/b"
             opts["format"] = selector
 
-        direct_threads_video = info.get("_mediafetch_direct_video") if platform == "threads" else None
-        if mode != "audio" and isinstance(direct_threads_video, str):
-            logger.info("Threads direct CDN download starting id=%s", info.get("id"))
+        direct_platform_video = (
+            info.get("_mediafetch_direct_video")
+            if platform in {"threads", "instagram"}
+            else None
+        )
+        if mode != "audio" and isinstance(direct_platform_video, str):
+            logger.info("%s direct CDN download starting id=%s", platform, info.get("id"))
             return _download_direct_video(
-                direct_threads_video,
+                direct_platform_video,
                 output_dir,
                 str(info.get("id") or "video"),
                 max_file_mb,
                 notify,
-                info.get("_mediafetch_direct_headers") if isinstance(info.get("_mediafetch_direct_headers"), dict) else None,
+                info.get("_mediafetch_direct_headers")
+                if isinstance(info.get("_mediafetch_direct_headers"), dict)
+                else None,
+                platform=platform,
             )
+
+        if mode != "audio" and platform in {"threads", "instagram"} and info.get("entries"):
+            structured_entries = _image_entries(info)
+            if any(
+                isinstance(entry, dict)
+                and isinstance(entry.get("_mediafetch_direct_video"), str)
+                for entry in structured_entries
+            ):
+                logger.info(
+                    "%s structured mixed-media download starting items=%d",
+                    platform,
+                    len(structured_entries),
+                )
+                return _download_structured_media(
+                    info,
+                    output_dir,
+                    max_file_mb,
+                    notify,
+                    platform,
+                )
 
         if mode == "photo" or (mode != "audio" and not _has_video_format(info)):
             # If extraction/fallback already produced an image URL, use it
