@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import quote_plus
 
 from telegram.error import BadRequest
-from telegram import InputFile, InputMediaPhoto, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InputFile, InputMediaPhoto, InputMediaVideo, InlineKeyboardButton, InlineKeyboardMarkup, Update
 
 import qrcode
 from telegram.constants import ChatAction
@@ -61,7 +61,7 @@ SUPPORTED_TEXT = (
 
 def _cache_key(url: str, mode: str) -> str:
     # v4 invalidates Instagram carousel cache created from cover/thumbnail fallbacks.
-    return hashlib.sha256(f"v4|{url}|{mode}".encode("utf-8")).hexdigest()
+    return hashlib.sha256(f"v5|{url}|{mode}".encode("utf-8")).hexdigest()
 
 
 def _is_owner(user_id: int) -> bool:
@@ -362,6 +362,117 @@ async def _send_photo_album(
                 )
             )
         return await message.reply_media_group(media=media)
+
+
+def _post_caption(info: MediaInfo | None, platform: str, label: str, item_count: int = 1) -> str:
+    """Build one compact album caption from source metadata."""
+    if not isinstance(info, MediaInfo):
+        return f"📥 <b>{html.escape(platform)}</b> • <b>{html.escape(label)}</b>"
+    title = html.escape((info.title or "Media").strip()[:180])
+    uploader = html.escape((info.uploader or "").strip()[:120])
+    description = html.escape(re.sub(r"\s+", " ", info.description or "").strip()[:420])
+    lines = [
+        f"📥 <b>{html.escape(platform)}</b> • <b>{html.escape(label)}</b>",
+        f"🎬 <b>{title}</b>",
+    ]
+    if uploader:
+        lines.append(f"👤 <b>By:</b> {uploader}")
+    if item_count > 1:
+        lines.append(f"🖼️ <b>Media:</b> {item_count} items")
+    if description and description.lower() != (info.title or "").strip().lower():
+        lines.append(f"📝 {description}")
+    if info.webpage_url:
+        lines.append(f'🔗 <a href="{html.escape(info.webpage_url, quote=True)}">Source post</a>')
+    return "\n".join(lines)[:1024]
+
+
+async def _send_media_album(
+    message,
+    paths: list[Path] | None = None,
+    file_ids: list[str] | None = None,
+    kinds: list[str] | None = None,
+    caption: str = "",
+) -> list:
+    """Send photo/video media as native Telegram albums, max 10 per request."""
+    if file_ids is not None:
+        ids = list(file_ids)
+        resolved_kinds = list(kinds or [])
+        if len(ids) == 1:
+            kind = resolved_kinds[0] if resolved_kinds else "document"
+            return [await _send_media_message(message, file_id=ids[0], kind=kind, caption=caption)]
+        sent: list = []
+        for start in range(0, len(ids), 10):
+            chunk = ids[start:start + 10]
+            media = []
+            for index, file_id in enumerate(chunk):
+                kind = resolved_kinds[start + index] if start + index < len(resolved_kinds) else "document"
+                if kind == "photo":
+                    media.append(InputMediaPhoto(media=file_id, caption=caption if start == 0 and index == 0 else None))
+                elif kind == "video":
+                    media.append(InputMediaVideo(
+                        media=file_id,
+                        caption=caption if start == 0 and index == 0 else None,
+                        supports_streaming=True,
+                    ))
+            if len(media) >= 2:
+                sent.extend(await message.reply_media_group(media=media))
+            elif media:
+                item = media[0]
+                if isinstance(item, InputMediaPhoto):
+                    sent.append(await message.reply_photo(photo=item.media, caption=item.caption))
+                else:
+                    sent.append(await message.reply_video(video=item.media, caption=item.caption, supports_streaming=True))
+        return sent
+
+    if not paths:
+        raise ValueError("paths or file_ids are required")
+    if len(paths) == 1:
+        return [await _send_media_message(
+            message, path=paths[0],
+            kind=(kinds[0] if kinds else _media_kind(paths[0])),
+            caption=caption,
+        )]
+
+    resolved_kinds = list(kinds or [_media_kind(path) for path in paths])
+    if not all(kind in {"photo", "video"} for kind in resolved_kinds):
+        return [
+            await _send_media_message(
+                message, path=path, kind=kind,
+                caption=caption if index == 0 else "",
+            )
+            for index, (path, kind) in enumerate(zip(paths, resolved_kinds))
+        ]
+
+    from contextlib import ExitStack
+    sent: list = []
+    for start in range(0, len(paths), 10):
+        chunk_paths = paths[start:start + 10]
+        chunk_kinds = resolved_kinds[start:start + 10]
+        media = []
+        with ExitStack() as stack:
+            for index, (path, kind) in enumerate(zip(chunk_paths, chunk_kinds)):
+                handle = stack.enter_context(path.open("rb"))
+                item_caption = caption if start == 0 and index == 0 else None
+                if kind == "photo":
+                    media.append(InputMediaPhoto(media=handle, caption=item_caption))
+                else:
+                    # Omit per-video FFmpeg thumbnails in albums to save CPU/RAM
+                    # on Koyeb free; Telegram can generate a preview itself.
+                    media.append(InputMediaVideo(
+                        media=handle,
+                        caption=item_caption,
+                        supports_streaming=True,
+                    ))
+            if len(media) >= 2:
+                sent.extend(await message.reply_media_group(media=media))
+            else:
+                sent.append(await _send_media_message(
+                    message,
+                    path=chunk_paths[0],
+                    kind=chunk_kinds[0],
+                    caption=caption if start == 0 else "",
+                ))
+    return sent
 
 
 def _quality_keyboard(info: MediaInfo, request_id: str) -> InlineKeyboardMarkup:
@@ -895,21 +1006,17 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 cached_kinds = metadata.get("media_kinds") or []
                 cached_ids = cache["file_ids"]
 
-                if cached_ids and cached_kinds and all(kind == "photo" for kind in cached_kinds):
-                    title = str(metadata.get("title") or "Media")[:80]
-                    caption = f"⚡ {platform} • {label}\n🎬 {title}\n📸 {len(cached_ids)} photos"
-                    await _send_photo_album(
+                if cached_ids and cached_kinds and all(
+                    kind in {"photo", "video"} for kind in cached_kinds
+                ) and len(cached_ids) > 1:
+                    await _send_media_album(
                         query.message,
                         file_ids=cached_ids,
-                        caption=caption,
+                        kinds=cached_kinds,
+                        caption=_post_caption(info, platform, label, len(cached_ids)),
                     )
                 else:
                     for index, file_id in enumerate(cached_ids, start=1):
-                        caption = (
-                            f"⚡ Cached • {platform} • {label}"
-                            if len(cached_ids) == 1
-                            else f"⚡ Cached • {platform} • Photo {index}/{len(cached_ids)}"
-                        )
                         kind = (
                             cached_kinds[index - 1]
                             if index - 1 < len(cached_kinds)
@@ -919,7 +1026,8 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                             query.message,
                             file_id=file_id,
                             kind=kind,
-                            caption=caption,
+                            caption=_post_caption(info, platform, label, len(cached_ids))
+                            if index == 1 else "",
                         )
                 await asyncio.to_thread(storage.increment_usage, user_id)
                 await asyncio.to_thread(storage.record_event, user_id, platform, True, 0, True)
@@ -1061,31 +1169,30 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 if _media_kind(item) == "photo" and item.stat().st_size <= 10 * 1024 * 1024
             ]
 
-            if len(photo_paths) == len(paths) and photo_paths:
-                title = info.title if isinstance(info, MediaInfo) else "Media"
-                total_mb = sum(item.stat().st_size for item in paths) / (1024 * 1024)
-                caption = (
-                    f"✅ {platform} • {label}\n"
-                    f"🎬 {title[:80]}\n"
-                    f"📸 {len(paths)} photos • {total_mb:.1f} MB"
-                )
-                sent_messages = await _send_photo_album(
+            media_kinds = [_media_kind(item) for item in paths]
+            can_album = (
+                len(paths) > 1
+                and all(kind in {"photo", "video"} for kind in media_kinds)
+                and all(item.stat().st_size <= bot_api_limit_mb * 1024 * 1024 for item in paths)
+            )
+            if can_album:
+                sent_messages = await _send_media_album(
                     query.message,
-                    paths=photo_paths,
-                    caption=caption,
+                    paths=paths,
+                    kinds=media_kinds,
+                    caption=_post_caption(info, platform, label, len(paths)),
                 )
                 sent_messages_for_dump.extend(sent_messages)
                 for sent in sent_messages:
                     if sent.photo:
                         file_ids.append(sent.photo[-1].file_id)
+                    elif sent.video:
+                        file_ids.append(sent.video.file_id)
             else:
                 for index, item in enumerate(paths, start=1):
-                    size_mb = item.stat().st_size / (1024 * 1024)
-                    caption = (
-                        f"✅ {platform} • {label} • {size_mb:.1f} MB"
-                        if len(paths) == 1
-                        else f"✅ {platform} • Photo {index}/{len(paths)} • {size_mb:.1f} MB"
-                    )
+                    caption = _post_caption(
+                        info, platform, label, len(paths)
+                    ) if index == 1 else ""
                     kind = _media_kind(item)
 
                     if use_mtproto and item.stat().st_size > bot_api_limit_mb * 1024 * 1024:
