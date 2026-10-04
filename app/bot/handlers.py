@@ -3,13 +3,17 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import html
+import io
 import logging
 import re
 import secrets
 from pathlib import Path
+from urllib.parse import quote_plus
 
 from telegram.error import BadRequest
 from telegram import InputFile, InputMediaPhoto, InlineKeyboardButton, InlineKeyboardMarkup, Update
+
+import qrcode
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
@@ -514,6 +518,40 @@ async def plans_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons) if buttons else None)
 
 
+async def _send_dynamic_upi_qr(message, plan: str, amount: int, currency: str, upi_id: str) -> None:
+    """Generate a plan-specific UPI QR with the exact payable amount."""
+    plan_label = PLAN_LABELS.get(plan, plan.title())
+    upi_uri = (
+        "upi://pay?"
+        f"pa={quote_plus(upi_id)}&"
+        f"pn={quote_plus('MediaFetch')}&"
+        f"am={quote_plus(f'{amount:.2f}')}&"
+        f"cu={quote_plus(currency)}&"
+        f"tn={quote_plus(f'MediaFetch {plan_label}')}"
+    )
+    try:
+        qr = qrcode.QRCode(version=None, box_size=10, border=4)
+        qr.add_data(upi_uri)
+        qr.make(fit=True)
+        image = qr.make_image()
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        buffer.seek(0)
+        buffer.name = f"mediafetch-{plan}-upi-qr.png"
+        await message.reply_photo(
+            photo=InputFile(buffer, filename=buffer.name),
+            caption=(
+                f"📲 <b>Scan to pay</b>\n"
+                f"📦 {plan_label}\n"
+                f"💰 <b>{amount} {currency}</b>\n"
+                f"📱 UPI: <code>{html.escape(upi_id)}</code>\n\n"
+                "QR me exact amount already set hai."
+            ),
+            parse_mode="HTML",
+        )
+    except Exception:
+        logger.exception("Dynamic UPI QR generation failed plan=%s amount=%s", plan, amount)
+
 async def payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query or not query.message or not update.effective_user:
@@ -539,10 +577,14 @@ async def payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         "3️⃣ Neeche sirf UTR bhejo.\n\n"
         "⚠️ UTR submit karna payment proof nahi hai. Plan owner verification ke baad hi activate hoga."
     )
-    payment_buttons = []
-    if cfg["qr_url"]:
-        payment_buttons.append([InlineKeyboardButton("📷 Open UPI QR", url=cfg["qr_url"])])
-    await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(payment_buttons) if payment_buttons else None)
+    await query.edit_message_text(text, parse_mode="HTML")
+    await _send_dynamic_upi_qr(
+        query.message,
+        plan,
+        int(cfg["prices"][plan]),
+        cfg["currency"],
+        cfg["upi_id"],
+    )
 
 
 async def _handle_payment_utr(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
