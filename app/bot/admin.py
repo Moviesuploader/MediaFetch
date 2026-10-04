@@ -146,7 +146,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await query.answer()
     action = query.data.split(":", 1)[1] if query.data else ""
 
-    if action == "home":
+    if action == "cancel":\n        _PENDING_ADMIN_ACTIONS.pop(user_id, None)\n        await _render_home(query.message)\n        return\n\n    if action == "home":
         _PENDING_ADMIN_ACTIONS.pop(user_id, None)
         await _render_home(query.message)
         return
