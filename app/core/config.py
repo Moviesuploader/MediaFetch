@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     mongodb_uri: str = ""
     mongodb_db: str = "mediafetch"
     admin_ids: str = ""
+    # Owner-only admin panel. If empty, the first ADMIN_IDS entry is owner.
+    owner_id: str = ""
     free_daily_limit: int = 10
     premium_daily_limit: int = 100
     cache_ttl_days: int = 7
