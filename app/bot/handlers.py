@@ -29,7 +29,7 @@ from app.downloader.service import DownloadError, MediaInfo, download_media, get
 URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 _ACTIVE_USERS: set[int] = set()
 _ACTIVE_LOCK = asyncio.Lock()
-_PENDING_REQUESTS: dict[int, tuple[str, str, str, MediaInfo | None]] = {}
+_PENDING_REQUESTS: dict[int, tuple[str, str, str, MediaInfo | None, str | None, object | None]] = {}
 _PENDING_PAYMENT_PLAN: dict[int, str] = {}
 _PENDING_LOCK = asyncio.Lock()
 class _DynamicDownloadLimiter:
@@ -702,7 +702,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 "⌛ You already have a link being inspected. Please wait for the quality buttons."
             )
             return
-        _PENDING_REQUESTS[user_id] = (request_id, url, platform, None)
+        _PENDING_REQUESTS[user_id] = (request_id, url, platform, None, username, link_log_message)
 
     status = await update.message.reply_text("🔎 Inspecting media…")
     try:
@@ -740,7 +740,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         if not current or current[0] != request_id:
             await status.edit_text("⌛ This request expired. Please send the URL again.")
             return
-        _PENDING_REQUESTS[user_id] = (request_id, url, platform, info)
+        _PENDING_REQUESTS[user_id] = (request_id, url, platform, info, username, link_log_message)
 
     title = info.title[:80]
     details = [f"🔎 <b>{platform}</b>", f"🎬 <b>{title}</b>"]
@@ -782,7 +782,7 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text("⌛ This request expired. Please send the URL again.")
         return
 
-    _, url, platform, info = pending
+    _, url, platform, info, username, link_log_message = pending
     if mode == "cancel":
         await query.edit_message_text("❌ Download cancelled.")
         return
