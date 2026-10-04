@@ -36,6 +36,9 @@ class Storage:
                 self._db.usage.create_index([("user_id", 1), ("day", 1)], unique=True)
                 self._db.events.create_index("created_at")
                 self._db.history.create_index([("user_id", 1), ("created_at", -1)])
+                self._db.payments.create_index("payment_id", unique=True)
+                self._db.payments.create_index("utr", unique=True)
+                self._db.payments.create_index([("status", 1), ("created_at", -1)])
         except Exception:
             self._client = None
             self._db = None
@@ -186,6 +189,88 @@ class Storage:
             "diamond": int(settings.diamond_daily_limit),
         }
         return max(0, values.get(plan, values["free"]))
+
+
+    def create_payment(self, payment_id: str, user_id: int, plan: str, amount: int, currency: str, utr: str) -> dict[str, Any]:
+        doc = {
+            "payment_id": payment_id, "user_id": int(user_id), "plan": plan,
+            "amount": int(amount), "currency": currency, "utr": utr,
+            "status": "pending", "created_at": datetime.now(timezone.utc),
+            "verified_at": None, "verified_by": None, "subscription_until": None,
+        }
+        if self._db is not None:
+            if self._db.payments.find_one({"utr": utr}):
+                raise ValueError("UTR already submitted")
+            self._db.payments.insert_one(doc)
+            return {k: v for k, v in doc.items()}
+        with self._lock:
+            self._payments = getattr(self, "_payments", {})
+            if any(str(item.get("utr", "")).lower() == utr.lower() for item in self._payments.values()):
+                raise ValueError("UTR already submitted")
+            self._payments[payment_id] = doc
+            return dict(doc)
+
+    def payment_by_id(self, payment_id: str) -> dict[str, Any] | None:
+        if self._db is not None:
+            return self._db.payments.find_one({"payment_id": payment_id}, {"_id": 0})
+        with self._lock:
+            item = getattr(self, "_payments", {}).get(payment_id)
+            return dict(item) if item else None
+
+    def pending_payments(self, limit: int = 20) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 100))
+        if self._db is not None:
+            return list(self._db.payments.find({"status": "pending"}, {"_id": 0}).sort("created_at", -1).limit(limit))
+        with self._lock:
+            items = [dict(v) for v in getattr(self, "_payments", {}).values() if v.get("status") == "pending"]
+            return sorted(items, key=lambda x: str(x.get("created_at", "")), reverse=True)[:limit]
+
+    def payment_stats(self) -> dict[str, int]:
+        if self._db is not None:
+            return {status: int(self._db.payments.count_documents({"status": status})) for status in ("pending", "approved", "rejected")}
+        with self._lock:
+            items = list(getattr(self, "_payments", {}).values())
+            return {status: sum(1 for x in items if x.get("status") == status) for status in ("pending", "approved", "rejected")}
+
+    def approve_payment(self, payment_id: str, verified_by: int, days: int) -> dict[str, Any]:
+        days = max(1, int(days))
+        now = datetime.now(timezone.utc)
+        if self._db is not None:
+            doc = self._db.payments.find_one_and_update(
+                {"payment_id": payment_id, "status": "pending"},
+                {"$set": {"status": "approved", "verified_at": now, "verified_by": int(verified_by)}},
+            )
+            if not doc:
+                raise ValueError("Payment is no longer pending")
+            expires = self.set_plan(int(doc["user_id"]), str(doc["plan"]), days)
+            self._db.payments.update_one({"payment_id": payment_id}, {"$set": {"subscription_until": expires}})
+            doc["subscription_until"] = expires
+            return doc
+        with self._lock:
+            doc = getattr(self, "_payments", {}).get(payment_id)
+            if not doc or doc.get("status") != "pending":
+                raise ValueError("Payment is no longer pending")
+            doc["status"] = "approved"; doc["verified_at"] = now; doc["verified_by"] = int(verified_by)
+            expires = self.set_plan(int(doc["user_id"]), str(doc["plan"]), days)
+            doc["subscription_until"] = expires
+            return dict(doc)
+
+    def reject_payment(self, payment_id: str, verified_by: int) -> dict[str, Any]:
+        now = datetime.now(timezone.utc)
+        if self._db is not None:
+            doc = self._db.payments.find_one_and_update(
+                {"payment_id": payment_id, "status": "pending"},
+                {"$set": {"status": "rejected", "verified_at": now, "verified_by": int(verified_by)}},
+            )
+            if not doc:
+                raise ValueError("Payment is no longer pending")
+            return doc
+        with self._lock:
+            doc = getattr(self, "_payments", {}).get(payment_id)
+            if not doc or doc.get("status") != "pending":
+                raise ValueError("Payment is no longer pending")
+            doc["status"] = "rejected"; doc["verified_at"] = now; doc["verified_by"] = int(verified_by)
+            return dict(doc)
 
     def record_event(
         self,
