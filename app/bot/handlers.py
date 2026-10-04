@@ -24,7 +24,24 @@ _ACTIVE_USERS: set[int] = set()
 _ACTIVE_LOCK = asyncio.Lock()
 _PENDING_REQUESTS: dict[int, tuple[str, str, str, MediaInfo | None]] = {}
 _PENDING_LOCK = asyncio.Lock()
-_DOWNLOAD_SLOTS = asyncio.Semaphore(settings.max_concurrent_downloads)
+class _DynamicDownloadLimiter:
+    def __init__(self) -> None:
+        self._condition = asyncio.Condition()
+        self._active = 0
+
+    async def acquire(self) -> None:
+        async with self._condition:
+            while self._active >= storage.concurrent_download_limit():
+                await self._condition.wait()
+            self._active += 1
+
+    async def release(self) -> None:
+        async with self._condition:
+            self._active = max(0, self._active - 1)
+            self._condition.notify_all()
+
+
+_DOWNLOAD_LIMITER = _DynamicDownloadLimiter()
 _RATE_LIMITER = UserRateLimiter(min_interval=3.0)
 logger = logging.getLogger(__name__)
 
@@ -116,7 +133,7 @@ def _media_kind(path: Path) -> str:
 
 async def _log_link(context: ContextTypes.DEFAULT_TYPE, user_id: int, username: str | None,
                    platform: str, url: str, status: str = "⏳ Processing") :
-    channel = (settings.links_log_channel_id or "").strip()
+    channel = str((storage.channel_config().get("links") or settings.links_log_channel_id or "")).strip()
     if not channel:
         return None
     user_label = f"@{username}" if username else str(user_id)
@@ -159,7 +176,7 @@ async def _update_link_log(context: ContextTypes.DEFAULT_TYPE, log_message, user
 
 async def _dump_messages(context: ContextTypes.DEFAULT_TYPE, messages: list, user_id: int,
                          username: str | None, platform: str, url: str) -> None:
-    channel = (settings.dump_channel_id or "").strip()
+    channel = str((storage.channel_config().get("dump") or settings.dump_channel_id or "")).strip()
     if not channel or not messages:
         return
     user_label = f"@{username}" if username else str(user_id)
@@ -722,7 +739,7 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             except Exception:
                 pass
 
-        await _DOWNLOAD_SLOTS.acquire()
+        await _DOWNLOAD_LIMITER.acquire()
         try:
             await status.edit_text(
                 f"🔎 <b>Platform:</b> {platform}\n"
@@ -738,7 +755,7 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 progress_callback=progress,
             )
         finally:
-            _DOWNLOAD_SLOTS.release()
+            await _DOWNLOAD_LIMITER.release()
 
         paths = path if isinstance(path, list) else [path]
         size_bytes = sum(item.stat().st_size for item in paths)
