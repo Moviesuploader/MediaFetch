@@ -254,7 +254,8 @@ class Storage:
             return dict(self._file_limits)
 
     def channel_config(self) -> dict[str, str]:
-        defaults = {"dump": "", "links": ""}
+        from app.core.config import settings
+        defaults = {"dump": str(settings.dump_channel_id or ""), "links": str(settings.links_log_channel_id or "")}
         if self._db is not None:
             doc = self._db.settings.find_one({"key": "channel_config"}) or {}
             return {key: str(doc.get(key, "") or "") for key in defaults}
