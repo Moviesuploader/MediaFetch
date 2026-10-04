@@ -18,6 +18,12 @@ def _start_pot_provider() -> None:
     enabled = os.getenv("YOUTUBE_POT_PROVIDER_ENABLED", "true").strip().lower() in {
         "1", "true", "yes", "on",
     }
+    mode = os.getenv("YOUTUBE_POT_PROVIDER_MODE", "script").strip().lower()
+    if mode != "http":
+        logger.info(
+            "YouTube POT provider: script mode enabled; no resident HTTP provider started"
+        )
+        return
     provider_url = os.getenv(
         "YOUTUBE_POT_PROVIDER_URL",
         "http://127.0.0.1:4416",
