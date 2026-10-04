@@ -1062,6 +1062,8 @@ def _instagram_structured_fallback(url: str) -> tuple[dict, str, dict] | None:
                 entry = {
                     "id": child_id, "title": title, "webpage_url": canonical_url,
                     "formats": [fmt], "http_headers": media_headers,
+                    "_mediafetch_direct_video": media_url,
+                    "_mediafetch_direct_headers": media_headers,
                 }
                 if image:
                     entry["thumbnail"] = image["url"]
@@ -1618,7 +1620,12 @@ def _threads_crawler_fallback(url: str) -> tuple[dict, str, dict] | None:
                     "protocol": urlsplit(media_url).scheme,
                     "http_headers": {"Referer": "https://www.threads.com/", "User-Agent": ua},
                 }
-                entries.append({"id": f"{post_code}_{idx}", "title": title, "webpage_url": final_url, "formats": [fmt]})
+                entries.append({
+                    "id": f"{post_code}_{idx}", "title": title, "webpage_url": final_url,
+                    "formats": [fmt],
+                    "_mediafetch_direct_video": media_url,
+                    "_mediafetch_direct_headers": fmt["http_headers"],
+                })
                 continue
             iv = item.get("image_versions2")
             image = best_variant(iv.get("candidates") if isinstance(iv, dict) else None)
