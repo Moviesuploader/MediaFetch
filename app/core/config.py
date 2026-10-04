@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     bronze_max_file_mb: int = 500
     platinum_max_file_mb: int = 1024
     diamond_max_file_mb: int = 2048
-    premium_max_file_mb: int = 500  # legacy alias
+    premium_max_file_mb: int = 500  # legacy alias for Bronze
     admin_max_file_mb: int = 0  # 0 = unlimited at application level
     max_file_mb: int = 50  # legacy fallback
     # MTProto user-session uploader. Never put the session string in Git.
@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     mtproto_upload_enabled: bool = True
     mtproto_nonpremium_max_mb: int = 2000
     mtproto_premium_max_mb: int = 4000
+    # MediaFetch intentionally splits anything above 2 GB into sequential parts,
+    # even when the connected Telegram user account can upload a larger single file.
+    large_upload_split_mb: int = 2000
+    local_bot_api_max_upload_mb: int = 2000
     max_concurrent_downloads: int = 1
 
     webhook_mode: bool = False
@@ -69,6 +73,9 @@ class Settings(BaseSettings):
     owner_id: str = ""
     free_daily_limit: int = 10
     premium_daily_limit: int = 100
+    bronze_daily_limit: int = 100
+    platinum_daily_limit: int = 100
+    diamond_daily_limit: int = 100
     cache_ttl_days: int = 7
     max_carousel_items: int = 10
 
