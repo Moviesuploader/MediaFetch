@@ -17,6 +17,7 @@ from app.core.config import settings
 from app.bot.admin import admin_has_pending_action, admin_message_router
 from app.core.rate_limit import UserRateLimiter
 from app.core.storage import storage
+from app.bot.mtproto import LargeUploadError, mtproto_uploader
 from app.downloader.detector import detect_platform
 from app.downloader.service import DownloadError, MediaInfo, download_media, get_media_info
 
@@ -57,33 +58,50 @@ def _cache_key(url: str, mode: str) -> str:
     return hashlib.sha256(f"v4|{url}|{mode}".encode("utf-8")).hexdigest()
 
 
+def _is_owner(user_id: int) -> bool:
+    try:
+        return bool(settings.owner_id and int(str(settings.owner_id).strip()) == user_id)
+    except (TypeError, ValueError):
+        return False
+
+
 def _is_admin(user_id: int) -> bool:
-    return user_id in settings.admin_id_set
+    return user_id in settings.admin_id_set or _is_owner(user_id)
+
+
+def _plan_name(user_id: int) -> str:
+    return str(storage.plan_info(user_id).get("plan") or "free").lower()
 
 
 def _file_limit_mb(user_id: int) -> int:
-    limits = storage.file_limits()
     if _is_admin(user_id):
-        configured = limits["admin"]
-    elif storage.is_premium(user_id):
-        configured = limits["premium"]
-    else:
-        configured = limits["free"]
-
-    # Official cloud Bot API uploads are limited to 50 MB. A Local Bot API
-    # Server raises the upload ceiling to 2000 MB.
-    if not settings.telegram_api_base_url:
-        return min(configured, 50)
-    return min(configured, 2000)
+        return 0
+    limits = storage.file_limits()
+    return int(limits.get(_plan_name(user_id), limits["free"]))
 
 
 def _limit_label(user_id: int) -> str:
     limits = storage.file_limits()
     if _is_admin(user_id):
-        return f"{limits['admin']} MB (Admin)"
-    if storage.is_premium(user_id):
-        return f"{limits['premium']} MB (Premium)"
-    return f"{limits['free']} MB (Free)"
+        return "Unlimited (Admin/Owner)"
+    plan = _plan_name(user_id)
+    labels = {
+        "free": f"{limits['free']} MB • Free",
+        "bronze": f"{limits['bronze']} MB • Bronze 🥉",
+        "platinum": f"{limits['platinum']} MB • Platinum 💎",
+        "diamond": f"{limits['diamond']} MB • Diamond 💎",
+    }
+    return labels.get(plan, f"{limits['free']} MB • Free")
+
+
+def _plan_upgrade_hint(user_id: int) -> str:
+    limits = storage.file_limits()
+    return (
+        f"🆓 Free: <b>{limits['free']} MB</b>\n"
+        f"🥉 Bronze: <b>{limits['bronze']} MB</b>\n"
+        f"💎 Platinum: <b>{limits['platinum']} MB</b>\n"
+        f"💎 Diamond: <b>{limits['diamond']} MB</b>"
+    )
 
 
 def _estimated_size_for_mode(info: MediaInfo, mode: str) -> int:
@@ -100,22 +118,11 @@ def _estimated_size_for_mode(info: MediaInfo, mode: str) -> int:
 
 def _limit_message(user_id: int, estimated_bytes: int, limit_mb: int) -> str:
     estimated_mb = estimated_bytes / (1024 * 1024)
-    if _is_admin(user_id):
-        return (
-            f"⚠️ This file is estimated at <b>{estimated_mb:.1f} MB</b>, "
-            f"which is above the configured Admin limit of <b>{limit_mb} MB</b>."
-        )
-    if storage.is_premium(user_id):
-        return (
-            f"⚠️ This file is estimated at <b>{estimated_mb:.1f} MB</b>, "
-            f"which is above your Premium limit of <b>{limit_mb} MB</b>."
-        )
     return (
-        f"📦 <b>File too large for Free users.</b>\n\n"
-        f"Estimated size: <b>{estimated_mb:.1f} MB</b>\n"
-        f"Free limit: <b>{storage.file_limits()['free']} MB</b>\n\n"
-        "💎 <b>Premium required</b> for larger downloads.\n"
-        "Use /premium to check your Premium status."
+        f"📦 <b>File is above your {_limit_label(user_id)} limit.</b>\n\n"
+        f"Estimated size: <b>{estimated_mb:.1f} MB</b>\n\n"
+        f"{_plan_upgrade_hint(user_id)}\n\n"
+        "Use /premium to see plan status."
     )
 
 
@@ -620,7 +627,7 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     max_file_mb = _file_limit_mb(user_id)
 
     estimated_bytes = _estimated_size_for_mode(info, mode) if isinstance(info, MediaInfo) else 0
-    if estimated_bytes > max_file_mb * 1024 * 1024:
+    if max_file_mb > 0 and estimated_bytes > max_file_mb * 1024 * 1024:
         await query.edit_message_text(
             _limit_message(user_id, estimated_bytes, max_file_mb),
             parse_mode="HTML",
@@ -765,8 +772,8 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         paths = path if isinstance(path, list) else [path]
         size_bytes = sum(item.stat().st_size for item in paths)
-        max_bytes = max_file_mb * 1024 * 1024
-        if any(item.stat().st_size > max_bytes for item in paths):
+        max_bytes = max_file_mb * 1024 * 1024 if max_file_mb > 0 else 0
+        if max_file_mb > 0 and any(item.stat().st_size > max_bytes for item in paths):
             if not _is_admin(user_id) and not storage.is_premium(user_id):
                 await status.edit_text(
                     f"📦 <b>File is larger than the Free limit ({storage.file_limits()['free']} MB).</b>\n\n"
@@ -781,10 +788,17 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await asyncio.to_thread(storage.record_event, user_id, platform, False, size_bytes)
             return
 
-        # Telegram's Bot API does not expose byte-level upload progress through
-        # python-telegram-bot's normal send_* helpers. Show a live animated
-        # upload bar rather than pretending a percentage is exact.
-        upload_running = True
+        # Files above 50 MB use the MTProto user session when configured.
+        use_mtproto = any(item.stat().st_size > 50 * 1024 * 1024 for item in paths)
+        if use_mtproto and not mtproto_uploader.ready:
+            await mtproto_uploader.start()
+        if use_mtproto and not mtproto_uploader.ready and not settings.telegram_api_base_url:
+            raise DownloadError(
+                "This file is above Telegram's normal 50 MB Bot API limit. "
+                "Configure API_ID, API_HASH and USER_SESSION_STRING."
+            )
+
+        upload_running = not use_mtproto
 
         async def upload_indicator() -> None:
             frames = [
@@ -847,6 +861,47 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         else f"✅ {platform} • Photo {index}/{len(paths)} • {size_mb:.1f} MB"
                     )
                     kind = _media_kind(item)
+
+                    if item.stat().st_size > 50 * 1024 * 1024:
+                        async def mt_progress(percent: float, detail: str) -> None:
+                            nonlocal last_text, last_progress_edit
+                            now = asyncio.get_running_loop().time()
+                            if percent < 100 and now - last_progress_edit < 1.0:
+                                return
+                            bar = progress_bar(percent)
+                            text = (
+                                f"📤 <b>Telegram Upload</b> • {platform}\n"
+                                f"🎯 <b>Mode:</b> {label}\n"
+                                f"⏫ <code>[{bar}] {percent:5.1f}%</code>\n"
+                                f"⚡ {detail}"
+                            )
+                            if text == last_text or status is None:
+                                return
+                            last_text = text
+                            last_progress_edit = now
+                            try:
+                                await status.edit_text(text, parse_mode="HTML")
+                            except Exception:
+                                pass
+
+                        try:
+                            sent_large = await mtproto_uploader.send_file(
+                                item,
+                                target_chat_id=query.message.chat_id,
+                                caption=caption,
+                                progress_callback=mt_progress,
+                                reply_to_message_id=query.message.message_id,
+                                dump_channel_id=(
+                                    storage.channel_config().get("dump")
+                                    or settings.dump_channel_id
+                                    or None
+                                ),
+                            )
+                        except LargeUploadError as exc:
+                            raise DownloadError(f"Large Telegram upload failed: {exc}") from exc
+                        sent_messages_for_dump.extend(sent_large)
+                        continue
+
                     sent = await _send_media_message(
                         query.message,
                         path=item,
@@ -864,14 +919,15 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             upload_running = False
             await upload_task
 
+        media_kinds = [_media_kind(item) for item in paths]
         if file_ids:
-            media_kinds = [_media_kind(item) for item in paths]
             metadata = {
                 "title": info.title if isinstance(info, MediaInfo) else "Media",
                 "platform": platform,
                 "size_bytes": size_bytes,
                 "media_kind": media_kinds[0] if len(set(media_kinds)) == 1 else "document",
                 "media_kinds": media_kinds,
+                "transport": "bot_api",
             }
             await asyncio.to_thread(storage.set_cache, _cache_key(url, mode), file_ids, metadata)
 
