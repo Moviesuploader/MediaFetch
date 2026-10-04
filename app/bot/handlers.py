@@ -328,6 +328,7 @@ async def _send_photo_album(
                 InputMediaPhoto(
                     media=file_id,
                     caption=caption if index == 0 else None,
+                    parse_mode="HTML",
                 )
             )
         return await message.reply_media_group(media=media)
@@ -347,7 +348,7 @@ async def _send_photo_album(
             logger.warning("Telegram rejected original photo; normalizing path=%s size=%d", path.name, path.stat().st_size)
             normalized = await asyncio.to_thread(_normalize_telegram_photo, path)
             with normalized.open("rb") as photo:
-                return [await message.reply_photo(photo=photo, caption=caption)]
+                return [await message.reply_photo(photo=photo, caption=caption, parse_mode="HTML")]
 
     # Telegram albums accept 2–10 media items. max_carousel_items is capped
     # at 10 in settings, so all photo carousel items can be sent together.
@@ -360,6 +361,7 @@ async def _send_photo_album(
                 InputMediaPhoto(
                     media=photo,
                     caption=caption if index == 0 else None,
+                    parse_mode="HTML",
                 )
             )
         return await message.reply_media_group(media=media)
@@ -408,11 +410,12 @@ async def _send_media_album(
             for index, file_id in enumerate(chunk):
                 kind = resolved_kinds[start + index] if start + index < len(resolved_kinds) else "document"
                 if kind == "photo":
-                    media.append(InputMediaPhoto(media=file_id, caption=caption if start == 0 and index == 0 else None))
+                    media.append(InputMediaPhoto(media=file_id, caption=caption if start == 0 and index == 0 else None, parse_mode="HTML"))
                 elif kind == "video":
                     media.append(InputMediaVideo(
                         media=file_id,
                         caption=caption if start == 0 and index == 0 else None,
+                        parse_mode="HTML",
                         supports_streaming=True,
                     ))
             if len(media) >= 2:
