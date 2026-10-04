@@ -390,7 +390,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "👋 <b>Welcome to MediaFetch!</b>\n\n"
         "Send a public media URL and choose the quality.\n"
         "🎬 Video • 🎵 MP3 • 📸 HD photos • 🖼️ carousels\n"
-        f"📦 Free limit: <b>{storage.file_limits()['free']} MB</b> • Premium: <b>{storage.file_limits()['premium']} MB</b>\n\n"
+        f"🆓 Free: <b>{storage.file_limits()['free']} MB</b> • 🥉 Bronze: <b>{storage.file_limits()['bronze']} MB</b> • 💎 Platinum: <b>{storage.file_limits()['platinum']} MB</b> • 💎 Diamond: <b>{storage.file_limits()['diamond']} MB</b>\n\n"
         "Use /help for commands.",
         parse_mode="HTML",
     )
@@ -436,20 +436,35 @@ async def premium_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not update.message:
         return
     user_id = update.effective_user.id if update.effective_user else update.message.chat_id
-    until = await asyncio.to_thread(storage.premium_until, user_id)
-    if until > __import__("time").time():
-        from datetime import datetime, timezone
-        date = datetime.fromtimestamp(until, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    from datetime import datetime, timezone
+    info = await asyncio.to_thread(storage.plan_info, user_id)
+    plan = str(info.get("plan") or "free")
+    limits = storage.file_limits()
+    labels = {
+        "free": ("🆓 Free", limits["free"]),
+        "bronze": ("🥉 Bronze", limits["bronze"]),
+        "platinum": ("💎 Platinum", limits["platinum"]),
+        "diamond": ("💎 Diamond", limits["diamond"]),
+    }
+    label, file_limit = labels.get(plan, labels["free"])
+    used = await asyncio.to_thread(storage.usage_today, user_id)
+    if info.get("active"):
+        date = datetime.fromtimestamp(float(info["until"]), tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         await update.message.reply_text(
-            f"💎 <b>Premium active</b>\nUntil: <b>{date}</b>\n"
-            f"Daily limit: <b>{settings.premium_daily_limit}</b>",
+            f"📦 <b>{label}</b> active\n"
+            f"📏 Max file: <b>{file_limit} MB</b>\n"
+            f"📅 Until: <b>{date}</b>\n"
+            f"📥 Today: <b>{used}/{settings.premium_daily_limit}</b>",
             parse_mode="HTML",
         )
     else:
-        used = await asyncio.to_thread(storage.usage_today, user_id)
         await update.message.reply_text(
-            f"🆓 <b>Free plan</b>\nToday: {used}/{settings.free_daily_limit} downloads.\n"
-            "Premium access is currently managed by the bot admin.",
+            f"🆓 <b>Free plan</b>\n"
+            f"📏 Max file: <b>{file_limit} MB</b>\n"
+            f"📥 Today: <b>{used}/{settings.free_daily_limit}</b>\n\n"
+            "🥉 Bronze — 500 MB\n"
+            "💎 Platinum — 1 GB\n"
+            "💎 Diamond — 2 GB",
             parse_mode="HTML",
         )
 
@@ -625,6 +640,18 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     max_file_mb = _file_limit_mb(user_id)
+
+    # A role limit above 50 MB needs either the dedicated MTProto user session
+    # or a Local Bot API Server. Reject early instead of downloading a file that
+    # the configured Telegram transport cannot deliver.
+    if max_file_mb > 50 and not settings.telegram_api_base_url and not mtproto_uploader.configured:
+        await query.edit_message_text(
+            "⚠️ <b>Large-file transport is not configured.</b>\n\n"
+            "This plan allows files above 50 MB, but Telegram's normal cloud Bot API "
+            "cannot upload them. Configure the MTProto user session first.",
+            parse_mode="HTML",
+        )
+        return
 
     estimated_bytes = _estimated_size_for_mode(info, mode) if isinstance(info, MediaInfo) else 0
     if max_file_mb > 0 and estimated_bytes > max_file_mb * 1024 * 1024:
