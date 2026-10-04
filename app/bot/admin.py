@@ -571,12 +571,19 @@ async def set_limit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if len(context.args) != 2 or context.args[0].lower() not in {"free", "bronze", "platinum", "diamond", "premium", "admin"} or not context.args[1].isdigit():
         await update.message.reply_text("Usage: /set_limit free|bronze|platinum|diamond MB")
         return
+    role = context.args[0].lower()
     mb = int(context.args[1])
-    if not 1 <= mb <= 100000:
-        await update.message.reply_text("Limit must be between 1 and 100000 MB.")
+    valid = 0 <= mb <= 100000 if role == "admin" else 1 <= mb <= 100000
+    if not valid:
+        await update.message.reply_text("Limit must be 0 for admin or 1–100000 MB for user tiers.")
         return
-    limits = await asyncio.to_thread(storage.set_file_limit, context.args[0], mb)
+    limits = await asyncio.to_thread(storage.set_file_limit, role, mb)
+    admin_label = "Unlimited" if limits["admin"] == 0 else f"{limits['admin']} MB"
     await update.message.reply_text(
-        "⚙️ <b>File limit updated</b>\n\n"
-        f"🆓 Free: <b>{limits['free']} MB</b>\n💎 Premium: <b>{limits['premium']} MB</b>\n👑 Admin: <b>{limits['admin']} MB</b>",
+        "⚙️ <b>File limits updated</b>\n\n"
+        f"🆓 Free: <b>{limits['free']} MB</b>\n"
+        f"🥉 Bronze: <b>{limits['bronze']} MB</b>\n"
+        f"💎 Platinum: <b>{limits['platinum']} MB</b>\n"
+        f"💎 Diamond: <b>{limits['diamond']} MB</b>\n"
+        f"👑 Admin/Owner: <b>{admin_label}</b>",
         parse_mode="HTML")
