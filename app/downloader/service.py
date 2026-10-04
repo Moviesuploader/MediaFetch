@@ -855,6 +855,164 @@ def _facebook_authenticated_photo_fallback(url: str) -> tuple[dict, str, dict] |
         return None
 
 
+def _facebook_video_page_fallback(url: str) -> tuple[dict, str, dict] | None:
+    """Recover public Facebook progressive video URLs from embedded page data.
+
+    Facebook can expose signed playable_url/playable_url_quality_hd values in
+    the rendered page even when yt-dlp's Facebook extractor cannot parse the
+    current Relay/Comet payload.
+    """
+    if curl_requests is None or _platform_from_url(url) != "facebook":
+        return None
+
+    try:
+        cookie_file = _materialize_facebook_cookie_file()
+        cookies: dict[str, str] = {}
+        if cookie_file and cookie_file.is_file():
+            try:
+                jar = http.cookiejar.MozillaCookieJar(str(cookie_file))
+                jar.load(ignore_discard=True, ignore_expires=True)
+                cookies = {cookie.name: cookie.value for cookie in jar}
+            except Exception as exc:
+                logger.warning(
+                    "Facebook video fallback cookie load failed error_type=%s",
+                    type(exc).__name__,
+                )
+
+        response = curl_requests.get(
+            url,
+            impersonate="chrome",
+            allow_redirects=True,
+            timeout=20,
+            cookies=cookies,
+            headers={
+                "Accept": (
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                    "image/avif,image/webp,*/*;q=0.8"
+                ),
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+        final_url = str(response.url)
+        if response.status_code >= 400 or "/login" in urlsplit(final_url).path.lower():
+            logger.info(
+                "Facebook video page fallback unavailable status=%s final_host=%s",
+                response.status_code,
+                urlsplit(final_url).netloc,
+            )
+            return None
+
+        page = response.text or ""
+        patterns = (
+            ("playable_url_quality_hd", 1080),
+            ("browser_native_hd_url", 1080),
+            ("playable_url", 480),
+            ("browser_native_sd_url", 480),
+        )
+        found: list[tuple[int, str, str]] = []
+        seen_urls: set[str] = set()
+
+        # Match the JSON string value exactly, then let json.loads decode
+        # escaped slashes/u0025/u0026 sequences safely.
+        for key, height in patterns:
+            pattern = rf'"{re.escape(key)}"\s*:\s*"((?:\\.|[^"\\])*)"'
+            for match in re.finditer(pattern, page):
+                raw = match.group(1)
+                try:
+                    candidate = json.loads('"' + raw + '"')
+                except Exception:
+                    candidate = raw.replace("\\/", "/")
+                    candidate = candidate.replace("\\u0025", "%").replace("\\u0026", "&")
+                if not isinstance(candidate, str):
+                    continue
+                candidate = candidate.replace("\\/", "/").replace("\\u0025", "%").replace("\\u0026", "&")
+                if not candidate.startswith(("http://", "https://")):
+                    continue
+                host = urlsplit(candidate).netloc.lower()
+                low = candidate.lower()
+                if not (
+                    "fbcdn.net" in host
+                    or "scontent" in host
+                    or host.startswith("video.")
+                ):
+                    continue
+                if ".mp4" not in low and "video" not in low:
+                    continue
+                if candidate not in seen_urls:
+                    seen_urls.add(candidate)
+                    found.append((height, key, candidate))
+
+        if not found:
+            logger.info(
+                "Facebook video page fallback found no playable CDN URL path=%s bytes=%d",
+                urlsplit(final_url).path,
+                len(response.content or b""),
+            )
+            return None
+
+        formats = []
+        for height, key, media_url in sorted(
+            found,
+            key=lambda item: (item[0], len(item[2])),
+            reverse=True,
+        ):
+            formats.append({
+                "format_id": f"facebook-page-{key}",
+                "url": media_url,
+                "ext": "mp4",
+                "vcodec": "h264",
+                "acodec": "aac",
+                "height": height,
+                "protocol": urlsplit(media_url).scheme,
+                "http_headers": {
+                    "User-Agent": (
+                        "Mozilla/5.0 (X11; Linux x86_64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/146.0.0.0 Safari/537.36"
+                    ),
+                    "Referer": final_url,
+                },
+            })
+
+        parser = _OpenGraphParser()
+        parser.feed(page)
+        title = parser.values.get("og:title") or "Facebook video"
+        thumbnail = parser.values.get("og:image")
+        video_id_match = re.search(
+            r'(?:"video_id"|"videoID"|"videoId")\s*:\s*"?([0-9]{6,})',
+            page,
+        )
+        video_id = (
+            video_id_match.group(1)
+            if video_id_match
+            else next(
+                (part for part in urlsplit(final_url).path.split("/") if part.isdigit()),
+                "facebook",
+            )
+        )
+        info = {
+            "id": video_id,
+            "title": title,
+            "webpage_url": final_url,
+            "thumbnail": thumbnail,
+            "formats": formats,
+        }
+        logger.info(
+            "Facebook public video fallback recovered id=%s formats=%d hd=%s",
+            video_id,
+            len(formats),
+            any(item.get("height", 0) >= 1000 for item in formats),
+        )
+        return info, final_url, _base_opts()
+    except Exception as exc:
+        logger.warning(
+            "Facebook video page fallback failed error_type=%s error=%s",
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+
 def _meta_public_page_fallback(url: str) -> tuple[dict, str, dict] | None:
     """Recover public Meta/Threads media from OpenGraph page metadata.
 
@@ -2568,6 +2726,28 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
                     candidate,
                     exc,
                 )
+
+    if _platform_from_url(url) == "facebook":
+        for candidate in _url_variants(url):
+            fallback = _facebook_video_page_fallback(candidate)
+            if fallback:
+                logger.info("Facebook public video fallback succeeded url=%s", candidate)
+                return fallback
+
+            photo_fallback = _facebook_curl_photo_fallback(candidate)
+            if photo_fallback:
+                logger.info("Facebook browser photo fallback succeeded url=%s", candidate)
+                return photo_fallback
+
+            authenticated_photo = _facebook_authenticated_photo_fallback(candidate)
+            if authenticated_photo:
+                logger.info("Facebook authenticated photo fallback succeeded url=%s", candidate)
+                return authenticated_photo
+
+        public_fallback = _meta_public_page_fallback(url)
+        if public_fallback:
+            logger.info("Facebook public OpenGraph fallback succeeded url=%s", url)
+            return public_fallback
 
     if _platform_from_url(url) == "instagram":
         for candidate in _url_variants(url):
