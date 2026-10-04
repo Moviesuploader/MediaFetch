@@ -2799,21 +2799,21 @@ def _download_direct_video(
         **(headers or {}),
     }
     request = urllib.request.Request(media_url, headers=request_headers)
-    limit = max_file_mb * 1024 * 1024
+    limit = max_file_mb * 1024 * 1024 if max_file_mb > 0 else 0
     downloaded = 0
     started = time.monotonic()
     try:
         with urllib.request.urlopen(request, timeout=60) as response, open(part, "wb") as fh:
             total = int(response.headers.get("Content-Length") or 0)
-            if total and total > limit:
-                raise DownloadError(f"Video exceeds the {max_file_mb} MB upload limit.")
+            if limit and total and total > limit:
+                raise DownloadError(f"Video exceeds the {max_file_mb} MB plan limit.")
             while True:
                 chunk = response.read(256 * 1024)
                 if not chunk:
                     break
                 downloaded += len(chunk)
-                if downloaded > limit:
-                    raise DownloadError(f"Video exceeds the {max_file_mb} MB upload limit.")
+                if limit and downloaded > limit:
+                    raise DownloadError(f"Video exceeds the {max_file_mb} MB plan limit.")
                 fh.write(chunk)
                 elapsed = max(time.monotonic() - started, 0.001)
                 percent = (downloaded / total * 100) if total else 0
@@ -2858,7 +2858,7 @@ def _download_sync(
             "format": selector or "best",
             "noplaylist": True,
             "merge_output_format": "mp4",
-            "max_filesize": max_file_mb * 1024 * 1024,
+            **({"max_filesize": max_file_mb * 1024 * 1024} if max_file_mb > 0 else {}),
             "progress_hooks": [],
         }
     )
