@@ -18,11 +18,11 @@ class Storage:
         self._lock = threading.RLock()
         self._cache: dict[str, dict[str, Any]] = {}
         self._usage: dict[tuple[int, str], int] = {}
-        self._premium: dict[int, float] = {}
+        self._premium: dict[int, float] = {}\n        self._plans: dict[int, dict[str, Any]] = {}
         self._users: set[int] = set()
         self._stats = {"downloads": 0, "cache_hits": 0, "failures": 0, "bytes": 0}
         self._history: dict[int, list[dict[str, Any]]] = {}
-        self._file_limits = {"free": 100, "premium": 500, "admin": 2000}
+        self._file_limits = {"free": 100, "bronze": 500, "platinum": 1024, "diamond": 2048, "admin": 0}
         self._client = None
         self._db = None
         try:
@@ -115,31 +115,58 @@ class Storage:
         with self._lock:
             return self._usage.get((user_id, day), 0)
 
-    def set_premium(self, user_id: int, days: int) -> float:
-        expires = 0.0 if days <= 0 else time.time() + days * 86400
+    def set_plan(self, user_id: int, plan: str, days: int) -> float:
+        plan = str(plan).lower().strip()
+        if plan not in {"free", "bronze", "platinum", "diamond"}:
+            raise ValueError("plan must be free, bronze, platinum or diamond")
+        expires = 0.0 if plan == "free" or days <= 0 else time.time() + days * 86400
         if self._db is not None:
             self._db.users.update_one(
                 {"user_id": user_id},
-                {"$set": {"user_id": user_id, "premium_until": expires}},
+                {"$set": {
+                    "user_id": user_id,
+                    "plan": plan,
+                    "plan_until": expires,
+                    "premium_until": expires if plan != "free" else 0.0,
+                }},
                 upsert=True,
             )
         else:
             with self._lock:
-                if expires:
-                    self._premium[user_id] = expires
-                else:
+                if plan == "free" or expires <= 0:
+                    self._plans.pop(user_id, None)
                     self._premium.pop(user_id, None)
+                else:
+                    self._plans[user_id] = {"plan": plan, "until": expires}
+                    self._premium[user_id] = expires
         return expires
 
-    def premium_until(self, user_id: int) -> float:
+    def plan_info(self, user_id: int) -> dict[str, Any]:
+        now = time.time()
         if self._db is not None:
-            doc = self._db.users.find_one({"user_id": user_id})
-            return float(doc.get("premium_until", 0)) if doc else 0.0
-        with self._lock:
-            return self._premium.get(user_id, 0.0)
+            doc = self._db.users.find_one({"user_id": user_id}) or {}
+            plan = str(doc.get("plan") or "").lower().strip()
+            until = float(doc.get("plan_until", doc.get("premium_until", 0)) or 0)
+        else:
+            with self._lock:
+                item = self._plans.get(user_id, {})
+                plan = str(item.get("plan") or "").lower().strip()
+                until = float(item.get("until", 0) or 0)
+                if not plan and self._premium.get(user_id, 0) > now:
+                    plan = "bronze"
+                    until = self._premium[user_id]
+        if plan not in {"bronze", "platinum", "diamond"} or until <= now:
+            return {"plan": "free", "until": 0.0, "active": False}
+        return {"plan": plan, "until": until, "active": True}
+
+    def set_premium(self, user_id: int, days: int) -> float:
+        return self.set_plan(user_id, "bronze", days)
+
+    def premium_until(self, user_id: int) -> float:
+        return float(self.plan_info(user_id).get("until", 0) or 0)
 
     def is_premium(self, user_id: int) -> bool:
-        return self.premium_until(user_id) > time.time()
+        return bool(self.plan_info(user_id).get("active"))
 
     def record_event(
         self,
@@ -224,24 +251,36 @@ class Storage:
             return [{"platform": p, **v} for p, v in sorted(result.items(), key=lambda pair: pair[1]["downloads"], reverse=True)]
 
     def file_limits(self) -> dict[str, int]:
-        defaults = dict(self._file_limits)
+        from app.core.config import settings
+        defaults = {
+            "free": max(1, int(settings.free_max_file_mb)),
+            "bronze": max(1, int(settings.bronze_max_file_mb)),
+            "platinum": max(1, int(settings.platinum_max_file_mb)),
+            "diamond": max(1, int(settings.diamond_max_file_mb)),
+            "admin": max(0, int(settings.admin_max_file_mb)),
+        }
         if self._db is not None:
-            doc = self._db.settings.find_one({"key": "file_limits"})
-            if doc:
+            doc = self._db.settings.find_one({"key": "file_limits"}) or {}
+            for key in defaults:
+                try:
+                    defaults[key] = max(0 if key == "admin" else 1, int(doc.get(key, defaults[key])))
+                except (TypeError, ValueError):
+                    pass
+        else:
+            with self._lock:
                 for key in defaults:
-                    try:
-                        defaults[key] = max(1, int(doc.get(key, defaults[key])))
-                    except (TypeError, ValueError):
-                        pass
-            return defaults
-        with self._lock:
-            return dict(self._file_limits)
+                    if key in self._file_limits:
+                        defaults[key] = max(0 if key == "admin" else 1, int(self._file_limits[key]))
+        defaults["premium"] = defaults["bronze"]
+        return defaults
 
     def set_file_limit(self, role: str, mb: int) -> dict[str, int]:
         role = role.lower().strip()
-        if role not in {"free", "premium", "admin"}:
-            raise ValueError("role must be free, premium or admin")
-        mb = max(1, min(int(mb), 2000))
+        if role == "premium":
+            role = "bronze"
+        if role not in {"free", "bronze", "platinum", "diamond", "admin"}:
+            raise ValueError("role must be free, bronze, platinum, diamond or admin")
+        mb = max(0 if role == "admin" else 1, min(int(mb), 100000))
         if self._db is not None:
             self._db.settings.update_one(
                 {"key": "file_limits"},
