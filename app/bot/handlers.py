@@ -790,28 +790,32 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         size_bytes = sum(item.stat().st_size for item in paths)
         max_bytes = max_file_mb * 1024 * 1024 if max_file_mb > 0 else 0
         if max_file_mb > 0 and any(item.stat().st_size > max_bytes for item in paths):
-            if not _is_admin(user_id) and not storage.is_premium(user_id):
-                await status.edit_text(
-                    f"📦 <b>File is larger than the Free limit ({storage.file_limits()['free']} MB).</b>\n\n"
-                    "💎 Please get Premium to download larger files.",
-                    parse_mode="HTML",
-                )
-            else:
-                await status.edit_text(
-                    f"⚠️ One or more files exceed your {_limit_label(user_id)} limit.",
-                    parse_mode="HTML",
-                )
+            await status.edit_text(
+                f"⚠️ <b>File exceeds your {_limit_label(user_id)} limit.</b>\n\n"
+                "Choose a lower quality or upgrade the plan.",
+                parse_mode="HTML",
+            )
             await asyncio.to_thread(storage.record_event, user_id, platform, False, size_bytes)
             return
 
-        # Files above 50 MB use the MTProto user session when configured.
-        use_mtproto = any(item.stat().st_size > 50 * 1024 * 1024 for item in paths)
+        # Keep plan limits separate from Telegram transport limits.
+        # Cloud Bot API <=50 MB; Local Bot API <=2000 MB when configured;
+        # otherwise the MTProto user session handles larger files.
+        bot_api_limit_mb = (
+            int(settings.local_bot_api_max_upload_mb)
+            if settings.telegram_api_base_url
+            else 50
+        )
+        use_mtproto = any(
+            item.stat().st_size > bot_api_limit_mb * 1024 * 1024
+            for item in paths
+        )
         if use_mtproto and not mtproto_uploader.ready:
             await mtproto_uploader.start()
-        if use_mtproto and not mtproto_uploader.ready and not settings.telegram_api_base_url:
+        if use_mtproto and not mtproto_uploader.ready:
             raise DownloadError(
-                "This file is above Telegram's normal 50 MB Bot API limit. "
-                "Configure API_ID, API_HASH and USER_SESSION_STRING."
+                "This file is above the configured Bot API transport limit, "
+                "and the MTProto user-session uploader is unavailable."
             )
 
         upload_running = not use_mtproto
@@ -878,7 +882,7 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     )
                     kind = _media_kind(item)
 
-                    if item.stat().st_size > 50 * 1024 * 1024:
+                    if use_mtproto and item.stat().st_size > bot_api_limit_mb * 1024 * 1024:
                         async def mt_progress(percent: float, detail: str) -> None:
                             nonlocal last_text, last_progress_edit
                             now = asyncio.get_running_loop().time()
