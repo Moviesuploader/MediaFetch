@@ -243,6 +243,14 @@ async def _send_media_message(
                 upload_progress,
                 cancel_event,
             )
+            # Keep the file handle lazy so python-telegram-bot/HTTPX reads it
+            # during multipart transmission and _ProgressFile can report real
+            # byte-level upload progress.
+            media = InputFile(
+                media,
+                filename=path.name,
+                read_file_handle=False,
+            )
         if kind == "video":
             thumbnail_file = None
             thumbnail_handle = None
