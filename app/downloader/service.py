@@ -380,6 +380,15 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
         api_url = f"https://www.youtube.com/watch?v={video_id}"
     query = urlencode({"url": api_url})
     endpoints = [f"{base_url}?{query}"]
+    # Some API deployments resolve short/share URLs differently from the
+    # canonical YouTube watch URL. Keep the original request first, but if it
+    # returns HTTP 500 the caller can retry the same API with watch?v=<id>.
+    if video_id:
+        canonical_api_url = f"https://www.youtube.com/watch?v={video_id}"
+        canonical_query = urlencode({"url": canonical_api_url})
+        canonical_endpoint = f"{base_url}?{canonical_query}"
+        if canonical_endpoint not in endpoints:
+            endpoints.append(canonical_endpoint)
 
     direct_keys = {
         "video_url", "videoUrl", "stream_url", "streamUrl",
