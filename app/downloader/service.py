@@ -554,11 +554,17 @@ def _extract_profiles(url: str) -> list[dict]:
             }
 
     if platform == "youtube":
+        # YouTube gets its own profile list so the generic default profile is
+        # not attempted first. That redundant attempt used to add ~2-3 seconds
+        # before the actual YouTube clients were even tried.
+        profiles = []
         # Koyeb/free-tier friendly order: use Safari HLS first because it can
         # expose merged video+audio formats without a GVS POT in current yt-dlp.
         # Heavy mweb/account profiles are kept as last-resort fallbacks so a
         # YouTube bot-check does not burn the whole worker's memory/time budget.
-        profile_timeout = max(8, min(settings.youtube_profile_timeout_seconds, 12))
+        # Keep each yt-dlp client bounded. The external API has a shorter
+        # deadline, so a slow API cannot consume the whole extraction budget.
+        profile_timeout = max(7, min(settings.youtube_profile_timeout_seconds, 9))
         provider_mode = settings.youtube_pot_provider_mode.strip().lower()
         cookie_opts = _apply_cookie_policy(_base_opts(), url)
         has_cookies = "cookiefile" in cookie_opts
