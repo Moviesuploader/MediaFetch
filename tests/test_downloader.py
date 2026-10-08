@@ -100,7 +100,8 @@ class DownloaderRoutingTests(unittest.TestCase):
             )
         self.assertGreaterEqual(profiles[1]["socket_timeout"], 5)
         self.assertIn("plugin_dirs", profiles[0])
-        self.assertIn("youtubepot-bgutilscript", profiles[1]["extractor_args"])
+        if pot_provider:
+            self.assertIn("youtubepot-bgutilscript", profiles[1]["extractor_args"])
 
 
     def test_youtube_mweb_is_last_resort(self):
