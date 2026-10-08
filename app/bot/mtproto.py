@@ -197,13 +197,25 @@ class MTProtoUploader:
                 raise LargeUploadError(
                     f"MTProto bridge peer is unavailable: {exc}"
                 ) from exc
-            saved = await self.client.send_document(
-                destination,
-                str(part_path),
-                caption=caption,
-                force_document=True,
-                progress=upload_progress,
-            )
+            # Preserve MP4 videos as real Telegram videos instead of
+            # documents. This is important because the Bot API copy step
+            # preserves the media type of the bridge message.
+            if part_path.suffix.lower() in {".mp4", ".m4v", ".mov"}:
+                saved = await self.client.send_video(
+                    destination,
+                    str(part_path),
+                    caption=caption,
+                    supports_streaming=True,
+                    progress=upload_progress,
+                )
+            else:
+                saved = await self.client.send_document(
+                    destination,
+                    str(part_path),
+                    caption=caption,
+                    force_document=True,
+                    progress=upload_progress,
+                )
             if not saved:
                 raise LargeUploadError("Telegram cancelled the MTProto upload.")
             return saved
