@@ -425,7 +425,7 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
                 or path.endswith((".mp4", ".m4v", ".webm"))
                 or "mime=video" in query_text
                 or quality_key
-                or (generic_media_key and height is not None and "video" in query_text)
+                or (generic_media_key and height is not None)
             )
         except Exception:
             return False
