@@ -90,6 +90,16 @@ class DownloaderRoutingTests(unittest.TestCase):
         self.assertIn("youtubepot-bgutilscript", profiles[1]["extractor_args"])
 
 
+    def test_youtube_authenticated_creator_profile_is_after_mweb(self):
+        profiles = _extract_profiles("https://www.youtube.com/watch?v=test")
+        clients = [
+            profile.get("extractor_args", {}).get("youtube", {}).get("player_client")
+            for profile in profiles
+        ]
+        self.assertEqual(clients[0], ["mweb"])
+        self.assertIn(["web_creator"], clients)
+        self.assertLess(clients.index(["web_creator"]), clients.index(["tv"]))
+
     def test_facebook_uses_browser_impersonation(self):
         profiles = _extract_profiles("https://www.facebook.com/reel/123")
         self.assertTrue(all(profile.get("impersonate") == "chrome" for profile in profiles))
