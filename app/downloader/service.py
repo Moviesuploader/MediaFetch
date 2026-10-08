@@ -3514,6 +3514,16 @@ def _prepare_telegram_video(
     if duration <= 0:
         raise DownloadError("YouTube API returned a media file with no valid duration.")
 
+    # Telegram's normal video path expects H.264/AVC. Do NOT transcode AV1
+    # on Koyeb's small instance: that can consume the entire CPU budget for
+    # minutes. Instead reject unsupported codecs so the API candidate loop can
+    # try another progressive H.264 stream or fall through to yt-dlp.
+    if video_codec not in {"h264", "avc1"}:
+        raise DownloadError(
+            f"YouTube API video codec {video_codec} is not Telegram-safe; "
+            "skipping expensive transcode."
+        )
+
     output = path.with_name(f"{path.stem}-telegram.mp4")
     if notify:
         notify(99, "preparing Telegram MP4…")
@@ -3791,12 +3801,31 @@ def _download_sync(
                 )
                 if api_formats:
                     last_api_error: Exception | None = None
+
+                    # Prefer progressive H.264/AAC candidates. AV1 candidates
+                    # remain available as metadata but are deliberately last;
+                    # if no Telegram-safe API stream exists, yt-dlp gets the
+                    # opportunity to handle the download instead of forcing a
+                    # CPU-heavy AV1 -> H.264 transcode.
+                    def api_candidate_score(fmt: dict) -> tuple[int, int, int, int]:
+                        height = int(fmt.get("height") or 0)
+                        vcodec = str(fmt.get("vcodec") or "unknown").lower()
+                        acodec = str(fmt.get("acodec") or "unknown").lower()
+                        progressive = int(acodec not in {"none", "", "unknown"})
+                        h264 = int(vcodec in {"h264", "avc1"})
+                        av1 = int("av01" in vcodec or vcodec == "av1")
+                        within = int(height <= (requested_height or 10**9))
+                        return (within, h264 * 100 + progressive * 20 - av1 * 50, height, int(fmt.get("preference") or 0))
+
+                    api_formats.sort(key=api_candidate_score, reverse=True)
+
                     for candidate_index, selected in enumerate(api_formats):
                         if cancel_event is not None and cancel_event.is_set():
                             raise DownloadCancelled("YouTube API download cancelled.")
                         logger.info(
-                            "YouTube API direct stream download starting height=%s candidate=%d/%d",
-                            selected.get("height"), candidate_index + 1, len(api_formats),
+                            "YouTube API direct stream download starting height=%s vcodec=%s acodec=%s candidate=%d/%d",
+                            selected.get("height"), selected.get("vcodec"), selected.get("acodec"),
+                            candidate_index + 1, len(api_formats),
                         )
                         try:
                             api_path = _download_direct_video(
@@ -3820,14 +3849,21 @@ def _download_sync(
                         except Exception as exc:
                             last_api_error = exc
                             logger.warning(
-                                "YouTube API candidate failed height=%s candidate=%d/%d error_type=%s error=%s",
-                                selected.get("height"), candidate_index + 1, len(api_formats),
+                                "YouTube API candidate failed height=%s vcodec=%s acodec=%s candidate=%d/%d error_type=%s error=%s",
+                                selected.get("height"), selected.get("vcodec"), selected.get("acodec"),
+                                candidate_index + 1, len(api_formats),
                                 type(exc).__name__, exc,
                             )
+
                     if last_api_error:
-                        raise DownloadError(
-                            f"YouTube API returned no valid media stream for {mode}: {last_api_error}"
+                        logger.warning(
+                            "YouTube API direct media candidates exhausted; falling back to yt-dlp "
+                            "mode=%s last_error=%s",
+                            mode, last_api_error,
                         )
+                    # IMPORTANT: do not raise here. API is first priority, but
+                    # a bad/unsupported API candidate must fall through to the
+                    # existing yt-dlp path rather than making the whole task fail.
 
             opts.update(extraction_opts)
             # Extraction options are authoritative for cookies/client selection;
