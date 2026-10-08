@@ -124,11 +124,13 @@ class DownloaderRoutingTests(unittest.TestCase):
         import app.downloader.service as service
 
         video_info = ({"formats": [{"url": "https://cdn.example/video.mp4"}]}, "https://www.facebook.com/reel/123", {})
-        with patch.object(service, "_extract_profiles", return_value=[]), \\
-             patch.object(service, "_facebook_video_page_fallback", return_value=None), \\
-             patch.object(service, "_facebook_curl_photo_fallback", side_effect=AssertionError("video share must not use photo fallback")), \\
-             patch.object(service, "_facebook_authenticated_photo_fallback", side_effect=AssertionError("video share must not use photo fallback")), \\
-             patch.object(service, "_meta_public_page_fallback", return_value=None):
+        with (
+            patch.object(service, "_extract_profiles", return_value=[]),
+            patch.object(service, "_facebook_video_page_fallback", return_value=None),
+            patch.object(service, "_facebook_curl_photo_fallback", side_effect=AssertionError("video share must not use photo fallback")),
+            patch.object(service, "_facebook_authenticated_photo_fallback", side_effect=AssertionError("video share must not use photo fallback")),
+            patch.object(service, "_meta_public_page_fallback", return_value=None),
+        ):
             with self.assertRaises(Exception):
                 _extract_with_fallback("https://www.facebook.com/share/v/ABC123/")
 
@@ -136,11 +138,13 @@ class DownloaderRoutingTests(unittest.TestCase):
         import app.downloader.service as service
 
         expected = ({"formats": [{"url": "https://cdn.example/threads.mp4"}]}, "https://www.threads.com/@u/post/123", {})
-        with patch.object(service, "_threads_crawler_fallback", return_value=None), \\
-             patch.object(service, "_threads_graphql_fallback", return_value=expected) as graphql, \\
-             patch.object(service, "_threads_authenticated_fallback", return_value=None), \\
-             patch.object(service, "_threads_browser_video_fallback", return_value=None), \\
-             patch.object(service, "_threads_api_fallback", return_value=None):
+        with (
+            patch.object(service, "_threads_crawler_fallback", return_value=None),
+            patch.object(service, "_threads_graphql_fallback", return_value=expected) as graphql,
+            patch.object(service, "_threads_authenticated_fallback", return_value=None),
+            patch.object(service, "_threads_browser_video_fallback", return_value=None),
+            patch.object(service, "_threads_api_fallback", return_value=None),
+        ):
             result = _extract_with_fallback("https://www.threads.com/share/ABC123/")
         self.assertEqual(result, expected)
         graphql.assert_called_once()
