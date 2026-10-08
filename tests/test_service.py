@@ -3,7 +3,7 @@ from app.downloader.service import _quality_selector
 
 def test_quality_selectors() -> None:
     assert _quality_selector("best") == "bv*+ba/b"
-    assert "height<=720" in _quality_selector("720p")
+    assert "height<=4320" in _quality_selector("4320p")\n    assert "height<=720" in _quality_selector("720p")\n    assert "height<=144" in _quality_selector("144p")
     assert _quality_selector("audio") == "bestaudio/best"
     assert _quality_selector("photo") == ""
 
