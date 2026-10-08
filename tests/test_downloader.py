@@ -175,12 +175,11 @@ class DownloaderRoutingTests(unittest.TestCase):
         self.assertEqual(_youtube_api_height("1440x2560"), 1440)
         self.assertIsNone(_youtube_api_height("best"))
 
-    def test_youtube_live_url_extracts_video_id(self):
+    def test_youtube_channel_live_url_does_not_extract_video_id(self):
         from app.downloader.service import _youtube_video_id
 
-        self.assertEqual(
+        self.assertIsNone(
             _youtube_video_id("https://www.youtube.com/live/UCcYP83kTmE?si=test"),
-            "UCcYP83kTmE",
         )
 
     def test_tiktok_platform_profile(self):
