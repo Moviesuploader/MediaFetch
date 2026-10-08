@@ -291,10 +291,6 @@ class DownloaderRoutingTests(unittest.TestCase):
             self.assertTrue(urlsplit(url).netloc)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
     def test_youtube_api_codec_hint_from_googlevideo_query(self):
         import app.downloader.service as service
 
@@ -326,3 +322,7 @@ if __name__ == "__main__":
         self.assertIsNotNone(result)
         info, _, _ = result
         self.assertEqual(info["formats"][0]["vcodec"], "h264")
+
+
+if __name__ == "__main__":
+    unittest.main()
