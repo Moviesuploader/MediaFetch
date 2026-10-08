@@ -293,3 +293,36 @@ class DownloaderRoutingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+    def test_youtube_api_codec_hint_from_googlevideo_query(self):
+        import app.downloader.service as service
+
+        original_urlopen = service.urllib.request.urlopen
+
+        class FakeResponse:
+            status = 200
+            headers = {"Content-Type": "application/json"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self, *args):
+                return (
+                    b'{"formats":[{"quality":"1080p",'
+                    b'"url":"https://r.googlevideo.com/videoplayback?mime=video%2Fmp4&codecs=avc1.640028",'
+                    b'"height":1080}]}'
+                )
+
+        service.urllib.request.urlopen = lambda *args, **kwargs: FakeResponse()
+        try:
+            result = service._youtube_api_fallback("https://youtu.be/dQw4w9WgXcQ")
+        finally:
+            service.urllib.request.urlopen = original_urlopen
+
+        self.assertIsNotNone(result)
+        info, _, _ = result
+        self.assertEqual(info["formats"][0]["vcodec"], "h264")
