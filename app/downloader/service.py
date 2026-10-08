@@ -475,7 +475,7 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
             )
             with urllib.request.urlopen(
                 request,
-                timeout=max(1, min(settings.youtube_api_timeout_seconds, 15)),
+                # Cap the external resolver wait so a slow third-party API cannot add a\n                # full 15-30 seconds before yt-dlp gets a chance to run.\n                timeout=max(1, min(settings.youtube_api_timeout_seconds, 7)),
             ) as response:
                 if getattr(response, "status", 200) >= 400:
                     continue
