@@ -372,7 +372,7 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
             return (
                 key in direct_keys
                 or "googlevideo.com" in host
-                or path.endswith((".mp4", ".m4v", ".webm", ".m3u8"))
+                or path.endswith((".mp4", ".m4v", ".webm"))
                 or "mime=video" in query_text
             )
         except Exception:
