@@ -509,6 +509,15 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
                     "acodec": "aac",
                     "height": item["height"],
                     "protocol": urlsplit(value).scheme,
+                    "http_headers": {
+                        "User-Agent": (
+                            "Mozilla/5.0 (X11; Linux x86_64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/146.0.0.0 Safari/537.36"
+                        ),
+                        "Accept": "video/mp4,video/webm,video/*;q=0.9,application/octet-stream;q=0.8,*/*;q=0.5",
+                        "Referer": "https://www.youtube.com/",
+                    },
                 })
 
             info = {
