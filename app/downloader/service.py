@@ -511,10 +511,11 @@ def _extract_profiles(url: str) -> list[dict]:
             }
 
     if platform == "youtube":
-        # Current yt-dlp guidance recommends mweb + a PO-token provider.
-        # Datacenter IPs may still require account cookies, so try the
-        # configured YouTube cookie jar with mweb BEFORE clean fallbacks.
-        profile_timeout = max(8, min(settings.youtube_profile_timeout_seconds, 20))
+        # Koyeb/free-tier friendly order: use Safari HLS first because it can
+        # expose merged video+audio formats without a GVS POT in current yt-dlp.
+        # Heavy mweb/account profiles are kept as last-resort fallbacks so a
+        # YouTube bot-check does not burn the whole worker's memory/time budget.
+        profile_timeout = max(8, min(settings.youtube_profile_timeout_seconds, 12))
         provider_mode = settings.youtube_pot_provider_mode.strip().lower()
         cookie_opts = _apply_cookie_policy(_base_opts(), url)
         has_cookies = "cookiefile" in cookie_opts
@@ -531,16 +532,14 @@ def _extract_profiles(url: str) -> list[dict]:
             youtube_profile["timeout"] = profile_timeout
             youtube_args: dict[str, object] = {"player_client": clients}
             if fetch_pot:
-                youtube_args["fetch_pot"] = ["always"]
+                # Let yt-dlp invoke the provider only when the selected client
+                # actually needs a token; "always" caused unnecessary provider
+                # work and made the Koyeb free instance more memory-hungry.
+                youtube_args["fetch_pot"] = ["auto"]
                 youtube_args["pot_trace"] = ["true"]
-
-            # Skipping the initial webpage request is a useful final fallback
-            # for cloud IPs that are blocked before Innertube player requests.
             if skip_webpage:
                 youtube_args["player_skip"] = ["webpage"]
-
             youtube_profile["extractor_args"] = {"youtube": youtube_args}
-
             if fetch_pot and settings.youtube_pot_provider_enabled:
                 if provider_mode == "script":
                     youtube_profile["extractor_args"]["youtubepot-bgutilscript"] = {
@@ -552,37 +551,22 @@ def _extract_profiles(url: str) -> list[dict]:
                     }
             profiles.append(youtube_profile)
 
-        # 1) Recommended path: authenticated mweb + per-video POT.
-        if has_cookies:
-            add_youtube_profile(["mweb"], cookies=True, fetch_pot=True)
-
-        # 2) Clean mweb + per-video POT. Useful for public videos when the
-        # exported account cookie has gone stale.
-        add_youtube_profile(["mweb"], fetch_pot=True)
-
-        # 3) web_safari can expose HLS formats that currently avoid GVS POT.
+        # Fast path: authenticated Safari HLS when cookies are available.
         add_youtube_profile(["web_safari"], cookies=has_cookies, fetch_pot=True)
 
-        # 4) Account-authenticated creator client. Current yt-dlp guidance
-        # documents web_creator as requiring account cookies and PO-token
-        # support, so try it before dropping to guest clients.
+        # Clean Safari HLS fallback. This is still lightweight and can avoid
+        # account/IP restrictions caused by the cookie jar.
         if has_cookies:
-            add_youtube_profile(["web_creator"], cookies=True, fetch_pot=True)
+            add_youtube_profile(["web_safari"], cookies=False, fetch_pot=True)
 
-        # 5) No-POT clients. Keep these after the authenticated/POT paths so
-        # they do not hide a provider/cookie failure in the primary path.
-        add_youtube_profile(["tv"], cookies=False)
+        # Lightweight clients with no cookie/POT dependency.
         add_youtube_profile(["android_vr"], cookies=False)
+        add_youtube_profile(["tv"], cookies=False)
 
-        # 6) Cloud-IP fallback: skip the initial webpage request. This is
-        # intentionally last because it can reduce metadata completeness.
-        add_youtube_profile(["tv", "web_embedded"], skip_webpage=True)
-
-        # Account-authenticated embedded clients remain useful for restricted
-        # videos, but only add them when a real cookie jar exists.
+        # Last-resort authenticated mweb. Keep it last so a blocked datacenter
+        # does not prevent the normal fast extraction path.
         if has_cookies:
-            add_youtube_profile(["tv_embedded"], cookies=True)
-            add_youtube_profile(["web_embedded"], cookies=True)
+            add_youtube_profile(["mweb"], cookies=True, fetch_pot=True)
 
     if platform == "facebook":
         # Facebook serves a different response to plain Python HTTP clients
