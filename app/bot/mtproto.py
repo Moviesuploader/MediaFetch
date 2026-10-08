@@ -187,26 +187,28 @@ class MTProtoUploader:
             if not saved:
                 raise LargeUploadError("Telegram cancelled the MTProto upload.")
 
-            delivered = await self._copy_to_target(
+            # Prefer a dump/bridge channel for large files. The MTProto
+            # user session may not have the requesting user's peer cached, which
+            # causes PEER_ID_INVALID even though the Bot API can message that
+            # user. The bot already has access to the user's PM, so the bridge
+            # lets the Bot API perform the final server-side copy.
+            if dump_channel_id:
+                delivered = await self._copy_to_target(
+                    "me",
+                    saved.id,
+                    dump_channel_id,
+                )
+                return delivered
+
+            # Preserve the old direct-delivery path when no bridge channel is
+            # configured. This can still work when the MTProto account has
+            # already met the target peer.
+            return await self._copy_to_target(
                 "me",
                 saved.id,
                 target_chat_id,
                 reply_to_message_id=reply_to_message_id,
             )
-
-            if dump_channel_id:
-                try:
-                    await self._copy_to_target(
-                        "me",
-                        saved.id,
-                        dump_channel_id,
-                    )
-                except Exception:
-                    # Dump is an operational side effect. A dump failure must
-                    # not make an otherwise successful user delivery fail.
-                    logger.exception("MTProto dump-channel copy failed.")
-
-            return delivered
         except LargeUploadError:
             raise
         except Exception as exc:
