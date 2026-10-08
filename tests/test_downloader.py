@@ -61,45 +61,44 @@ class DownloaderRoutingTests(unittest.TestCase):
         url = "https://www.youtube.com/watch?v=test"
         self.assertEqual(_platform_from_url(url), "youtube")
         profiles = _extract_profiles(url)
-        self.assertGreaterEqual(len(profiles), 5)
+        self.assertGreaterEqual(len(profiles), 4)
         public_clients = [
             profile["extractor_args"]["youtube"]["player_client"]
-            for profile in profiles[1:5]
+            for profile in profiles
         ]
         self.assertEqual(
             public_clients,
-            [["mweb"], ["web_safari"], ["tv"], ["android_vr"]],
+            [["web_safari"], ["android_vr"], ["tv"], ["mweb"]],
         )
         self.assertEqual(
-            profiles[1]["extractor_args"]["youtube"]["fetch_pot"],
-            ["always"],
+            profiles[0]["extractor_args"]["youtube"]["fetch_pot"],
+            ["auto"],
         )
         self.assertEqual(
-            profiles[1]["extractor_args"]["youtube"]["pot_trace"],
+            profiles[0]["extractor_args"]["youtube"]["pot_trace"],
             ["true"],
         )
         self.assertEqual(
-            profiles[1]["extractor_args"]["youtubepot-bgutilscript"]["server_home"],
+            profiles[0]["extractor_args"]["youtubepot-bgutilscript"]["server_home"],
             "/opt/bgutil-ytdlp-pot-provider/server",
         )
         self.assertEqual(
-            profiles[1]["socket_timeout"],
+            profiles[0]["socket_timeout"],
             12,
         )
         self.assertIn("plugin_dirs", profiles[0])
-        self.assertIn("youtubepot-bgutilscript", profiles[1]["extractor_args"])
+        self.assertIn("youtubepot-bgutilscript", profiles[0]["extractor_args"])
 
 
-    def test_youtube_authenticated_creator_profile_is_after_mweb(self):
+    def test_youtube_mweb_is_last_resort(self):
         profiles = _extract_profiles("https://www.youtube.com/watch?v=test")
         clients = [
             profile.get("extractor_args", {}).get("youtube", {}).get("player_client")
             for profile in profiles
         ]
-        self.assertEqual(clients[1], ["mweb"])
-        self.assertLess(clients.index(["mweb"]), clients.index(["tv"]))
-        if ["web_creator"] in clients:
-            self.assertLess(clients.index(["web_creator"]), clients.index(["tv"]))
+        if ["mweb"] in clients:
+            self.assertEqual(clients[-1], ["mweb"])
+            self.assertGreaterEqual(clients.index(["mweb"]), clients.index(["tv"]))
 
     def test_facebook_uses_browser_impersonation(self):
         profiles = _extract_profiles("https://www.facebook.com/reel/123")
