@@ -635,6 +635,13 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
                 "YouTube API fallback failed endpoint=%s error_type=%s error=%s",
                 endpoint, type(exc).__name__, exc,
             )
+            # Only spend another API request on a server-side 5xx. Timeouts,
+            # auth/rate-limit errors and client errors should fall through to
+            # yt-dlp instead of doubling the user's wait.
+            if endpoint != endpoints[-1] and not (
+                isinstance(exc, urllib.error.HTTPError) and exc.code >= 500
+            ):
+                break
     return None
 
 
