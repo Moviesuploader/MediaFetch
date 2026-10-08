@@ -346,9 +346,10 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
 
     base_url = settings.youtube_api_url.rstrip("/")
     query = urlencode({"url": url})
+    # The release advertises the root live API endpoint. Do not probe an
+    # undocumented /api route: a slow second request used to add another full
+    # timeout before yt-dlp could start.
     endpoints = [f"{base_url}?{query}"]
-    if not base_url.endswith("/api"):
-        endpoints.append(f"{base_url}/api?{query}")
 
     direct_keys = {
         "video_url", "videoUrl", "stream_url", "streamUrl",
@@ -431,7 +432,7 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
             )
             with urllib.request.urlopen(
                 request,
-                timeout=max(3, min(settings.youtube_api_timeout_seconds, 10)),
+                timeout=max(1, min(settings.youtube_api_timeout_seconds, 5)),
             ) as response:
                 if getattr(response, "status", 200) >= 400:
                     continue
@@ -562,12 +563,18 @@ def _extract_profiles(url: str) -> list[dict]:
         # 3) web_safari can expose HLS formats that currently avoid GVS POT.
         add_youtube_profile(["web_safari"], cookies=has_cookies, fetch_pot=True)
 
-        # 4) No-POT clients. Keep these after mweb so they don't hide a
-        # provider/cookie failure in the primary path.
+        # 4) Account-authenticated creator client. Current yt-dlp guidance
+        # documents web_creator as requiring account cookies and PO-token
+        # support, so try it before dropping to guest clients.
+        if has_cookies:
+            add_youtube_profile(["web_creator"], cookies=True, fetch_pot=True)
+
+        # 5) No-POT clients. Keep these after the authenticated/POT paths so
+        # they do not hide a provider/cookie failure in the primary path.
         add_youtube_profile(["tv"], cookies=False)
         add_youtube_profile(["android_vr"], cookies=False)
 
-        # 5) Cloud-IP fallback: skip the initial webpage request. This is
+        # 6) Cloud-IP fallback: skip the initial webpage request. This is
         # intentionally last because it can reduce metadata completeness.
         add_youtube_profile(["tv", "web_embedded"], skip_webpage=True)
 
@@ -2827,7 +2834,7 @@ def _reddit_json_fallback(url: str) -> tuple[dict, str, dict] | None:
 def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
     last_error: Exception | None = None
     extraction_deadline = (
-        time.monotonic() + max(10, settings.extraction_timeout_seconds)
+        time.monotonic() + max(20, settings.extraction_timeout_seconds, 45)
         if _platform_from_url(url) == "youtube"
         else None
     )
