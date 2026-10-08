@@ -8,6 +8,7 @@ import binascii
 import mimetypes
 import time
 import logging
+import subprocess
 import urllib.request
 import urllib.error
 import http.cookiejar
@@ -3360,6 +3361,90 @@ def _download_direct_video(
         raise
 
 
+def _prepare_telegram_video(path: Path) -> Path:
+    """Validate and normalize an API video for Telegram playback.
+
+    The external API can return a perfectly downloadable MP4 whose container
+    metadata is not optimized for Telegram playback, or a codec that some
+    Telegram clients cannot decode. Probe first, then prefer a lossless
+    stream-copy/faststart pass; only transcode when the codec requires it.
+    """
+    probe = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "stream=codec_type,codec_name",
+            "-of", "json", str(path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    if probe.returncode != 0:
+        raise DownloadError("YouTube API returned an invalid media file.")
+    try:
+        streams = json.loads(probe.stdout or "{}").get("streams") or []
+    except json.JSONDecodeError as exc:
+        raise DownloadError("YouTube API returned unreadable media metadata.") from exc
+
+    video_codecs = [
+        str(item.get("codec_name") or "").lower()
+        for item in streams
+        if item.get("codec_type") == "video"
+    ]
+    audio_codecs = [
+        str(item.get("codec_name") or "").lower()
+        for item in streams
+        if item.get("codec_type") == "audio"
+    ]
+    if not video_codecs:
+        raise DownloadError("YouTube API response did not contain a video stream.")
+
+    video_codec = video_codecs[0]
+    audio_codec = audio_codecs[0] if audio_codecs else "none"
+    logger.info(
+        "YouTube API media probe video_codec=%s audio_codec=%s path=%s",
+        video_codec, audio_codec, path.name,
+    )
+
+    output = path.with_name(f"{path.stem}-telegram.mp4")
+    if video_codec in {"h264", "avc1"} and audio_codec in {"aac", "mp4a"}:
+        command = [
+            "ffmpeg", "-y", "-i", str(path),
+            "-map", "0:v:0", "-map", "0:a:0?",
+            "-c", "copy", "-movflags", "+faststart", str(output),
+        ]
+    else:
+        # Telegram playback compatibility fallback. Keep the API as the source;
+        # yt-dlp is not used here. Re-encode only when stream codecs require it.
+        command = [
+            "ffmpeg", "-y", "-i", str(path),
+            "-map", "0:v:0", "-map", "0:a:0?",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+            "-movflags", "+faststart", str(output),
+        ]
+
+    process = subprocess.run(
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=300,
+    )
+    if process.returncode != 0 or not output.is_file() or output.stat().st_size <= 0:
+        logger.warning(
+            "YouTube API Telegram normalization failed returncode=%s error=%s",
+            process.returncode, (process.stderr or "")[-1200:],
+        )
+        raise DownloadError("YouTube API media could not be prepared for Telegram playback.")
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    output.replace(path)
+    return path
+
+
 def _entry_video_format(entry: dict, mode: str) -> dict | None:
     """Choose a directly downloadable progressive video format from a child."""
     formats = [
@@ -3553,7 +3638,7 @@ def _download_sync(
                         "YouTube API direct stream download starting height=%s",
                         selected.get("height"),
                     )
-                    return _download_direct_video(
+                    api_path = _download_direct_video(
                         selected["url"],
                         output_dir,
                         str(info.get("id") or "youtube-api"),
@@ -3562,6 +3647,7 @@ def _download_sync(
                         selected.get("http_headers") if isinstance(selected.get("http_headers"), dict) else None,
                         platform="YouTube API",
                     )
+                    return _prepare_telegram_video(api_path)
 
             opts.update(extraction_opts)
             # Extraction options are authoritative for cookies/client selection;
