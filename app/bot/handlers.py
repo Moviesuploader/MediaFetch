@@ -1110,7 +1110,8 @@ async def _download_choice_worker(update: Update, context: ContextTypes.DEFAULT_
         status = await query.edit_message_text(
             f"🔎 <b>Platform:</b> {platform}\n"
             f"🎯 <b>Mode:</b> {label}\n"
-            f"⏬ <b>Progress:</b> starting…",
+            "⏬ <b>Download:</b> <code>[░░░░░░░░░░░░] 0.0%</code>\n"
+            "⚡ preparing…",
             reply_markup=_cancel_keyboard(request_id),
             parse_mode="HTML",
         )
@@ -1157,7 +1158,8 @@ async def _download_choice_worker(update: Update, context: ContextTypes.DEFAULT_
             await status.edit_text(
                 f"🔎 <b>Platform:</b> {platform}\n"
                 f"🎯 <b>Mode:</b> {label}\n"
-                "⏬ <b>Progress:</b> downloading…",
+                "⏬ <b>Download:</b> <code>[░░░░░░░░░░░░] 0.0%</code>\n"
+                "⚡ downloading…",
                 reply_markup=_cancel_keyboard(request_id),
                 parse_mode="HTML",
             )
