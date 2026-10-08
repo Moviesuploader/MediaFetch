@@ -3651,25 +3651,54 @@ def _download_sync(
                 and mode != "audio"
                 and info.get("_mediafetch_youtube_api")
             ):
-                selected = _entry_video_format(
-                    {"formats": info.get("_mediafetch_youtube_api_formats") or info.get("formats") or []},
-                    mode,
+                api_formats = [
+                    fmt for fmt in (info.get("_mediafetch_youtube_api_formats") or info.get("formats") or [])
+                    if isinstance(fmt, dict) and isinstance(fmt.get("url"), str)
+                ]
+                requested_height = (
+                    int(mode[:-1]) if mode.endswith("p") and mode[:-1].isdigit() else None
                 )
-                if selected and isinstance(selected.get("url"), str):
-                    logger.info(
-                        "YouTube API direct stream download starting height=%s",
-                        selected.get("height"),
-                    )
-                    api_path = _download_direct_video(
-                        selected["url"],
-                        output_dir,
-                        str(info.get("id") or "youtube-api"),
-                        max_file_mb,
-                        notify,
-                        selected.get("http_headers") if isinstance(selected.get("http_headers"), dict) else None,
-                        platform="YouTube API",
-                    )
-                    return _prepare_telegram_video(api_path)
+                api_formats.sort(
+                    key=lambda fmt: (
+                        int(fmt.get("height") or 0) <= (requested_height or 10**9),
+                        int(fmt.get("height") or 0),
+                    ),
+                    reverse=True,
+                )
+                if api_formats:
+                    last_api_error: Exception | None = None
+                    for candidate_index, selected in enumerate(api_formats):
+                        if cancel_event is not None and cancel_event.is_set():
+                            raise DownloadCancelled("YouTube API download cancelled.")
+                        logger.info(
+                            "YouTube API direct stream download starting height=%s candidate=%d/%d",
+                            selected.get("height"), candidate_index + 1, len(api_formats),
+                        )
+                        try:
+                            api_path = _download_direct_video(
+                                selected["url"],
+                                output_dir,
+                                str(info.get("id") or "youtube-api") + f"-{candidate_index}",
+                                max_file_mb,
+                                notify,
+                                selected.get("http_headers") if isinstance(selected.get("http_headers"), dict) else None,
+                                platform="YouTube API",
+                                cancel_event=cancel_event,
+                            )
+                            return _prepare_telegram_video(api_path)
+                        except DownloadCancelled:
+                            raise
+                        except Exception as exc:
+                            last_api_error = exc
+                            logger.warning(
+                                "YouTube API candidate failed height=%s candidate=%d/%d error_type=%s error=%s",
+                                selected.get("height"), candidate_index + 1, len(api_formats),
+                                type(exc).__name__, exc,
+                            )
+                    if last_api_error:
+                        raise DownloadError(
+                            f"YouTube API returned no valid media stream for {mode}: {last_api_error}"
+                        )
 
             opts.update(extraction_opts)
             # Extraction options are authoritative for cookies/client selection;
