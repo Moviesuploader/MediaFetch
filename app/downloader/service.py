@@ -15,7 +15,7 @@ from html.parser import HTMLParser
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlencode, urljoin, urlsplit
 
 import yt_dlp
 try:
@@ -309,6 +309,180 @@ def _platform_from_url(url: str) -> str:
     if host in {"tiktok.com", "vm.tiktok.com"} or host.endswith(".tiktok.com"):
         return "tiktok"
     return "generic"
+
+
+
+def _youtube_api_height(value: object) -> int | None:
+    """Extract a numeric video height from API quality/resolution labels."""
+    if isinstance(value, (int, float)) and int(value) > 0:
+        return int(value)
+    if not isinstance(value, str):
+        return None
+    match = re.search(r"(?<!\d)(\d{3,4})(?:p|$)", value.lower())
+    if match:
+        return int(match.group(1))
+    match = re.search(r"(?<!\d)(\d{3,4})(?:\s*[x×]\s*\d{3,4})?", value.lower())
+    return int(match.group(1)) if match else None
+
+
+def _youtube_video_id(url: str) -> str | None:
+    parts = urlsplit(url)
+    host = parts.netloc.lower().split(":")[0]
+    if host == "youtu.be":
+        value = parts.path.strip("/").split("/", 1)[0]
+        return value or None
+    match = re.search(r"(?:^|[?&])v=([A-Za-z0-9_-]{6,})", parts.query)
+    if match:
+        return match.group(1)
+    match = re.search(r"/shorts/([A-Za-z0-9_-]{6,})", parts.path)
+    return match.group(1) if match else None
+
+
+def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
+    """Use the optional Desi API as a YouTube-only direct-stream fallback."""
+    if not settings.youtube_api_enabled or not settings.youtube_api_url:
+        return None
+
+    base_url = settings.youtube_api_url.rstrip("/")
+    query = urlencode({"url": url})
+    endpoints = [f"{base_url}?{query}"]
+    if not base_url.endswith("/api"):
+        endpoints.append(f"{base_url}/api?{query}")
+
+    direct_keys = {
+        "video_url", "videoUrl", "stream_url", "streamUrl",
+        "download_url", "downloadUrl", "direct_url", "directUrl",
+        "mp4", "mp4_url", "mp4Url",
+    }
+    ignored_hosts = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
+    found: list[dict] = []
+    seen: set[str] = set()
+    metadata: dict[str, object] = {}
+
+    def is_direct_video(value: str, key: str) -> bool:
+        try:
+            parts = urlsplit(value)
+            host = parts.netloc.lower().split(":")[0]
+            if host.startswith("www."):
+                host = host[4:]
+            if host in ignored_hosts:
+                return False
+            path = parts.path.lower()
+            query_text = parts.query.lower()
+            return (
+                key in direct_keys
+                or "googlevideo.com" in host
+                or path.endswith((".mp4", ".m4v", ".webm", ".m3u8"))
+                or "mime=video" in query_text
+            )
+        except Exception:
+            return False
+
+    def walk(node: object, inherited_height: int | None = None) -> None:
+        if isinstance(node, dict):
+            local_height = inherited_height
+            for key in ("height", "quality", "resolution", "qualityLabel", "quality_label", "label"):
+                parsed = _youtube_api_height(node.get(key))
+                if parsed:
+                    local_height = parsed
+                    break
+
+            for key in ("title", "name", "video_title", "videoTitle"):
+                value = node.get(key)
+                if isinstance(value, str) and value.strip() and "title" not in metadata:
+                    metadata["title"] = value.strip()
+                    break
+            for key in ("uploader", "channel", "channelName", "author", "artist"):
+                value = node.get(key)
+                if isinstance(value, str) and value.strip() and "uploader" not in metadata:
+                    metadata["uploader"] = value.strip()
+                    break
+            for key in ("description", "caption"):
+                value = node.get(key)
+                if isinstance(value, str) and value.strip() and "description" not in metadata:
+                    metadata["description"] = value.strip()
+                    break
+            for key in ("thumbnail", "thumbnail_url", "thumbnailUrl"):
+                value = node.get(key)
+                if isinstance(value, str) and value.startswith(("http://", "https://")) and "thumbnail" not in metadata:
+                    metadata["thumbnail"] = value
+                    break
+
+            for key, value in node.items():
+                if isinstance(value, str) and value.startswith(("http://", "https://")):
+                    if is_direct_video(value, str(key)) and value not in seen:
+                        seen.add(value)
+                        found.append({"url": value, "height": local_height or 0})
+                elif isinstance(value, (dict, list)):
+                    walk(value, local_height)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, inherited_height)
+
+    for endpoint in endpoints:
+        try:
+            request = urllib.request.Request(
+                endpoint,
+                headers={
+                    "User-Agent": "MediaFetch/1.0",
+                    "Accept": "application/json,text/plain;q=0.9,*/*;q=0.8",
+                },
+            )
+            with urllib.request.urlopen(
+                request,
+                timeout=max(3, min(settings.youtube_api_timeout_seconds, 10)),
+            ) as response:
+                if getattr(response, "status", 200) >= 400:
+                    continue
+                content = response.read(2 * 1024 * 1024)
+
+            payload = json.loads(content.decode("utf-8", "replace"))
+            found.clear()
+            seen.clear()
+            metadata.clear()
+            walk(payload)
+            if not found:
+                logger.warning("YouTube API returned no direct video streams endpoint=%s", endpoint)
+                continue
+
+            formats = []
+            for index, item in enumerate(found, 1):
+                value = item["url"]
+                clean = value.lower().split("?", 1)[0]
+                ext = "webm" if clean.endswith(".webm") else "mp4"
+                formats.append({
+                    "format_id": f"desi-api-{item['height'] or index}",
+                    "url": value,
+                    "ext": ext,
+                    "vcodec": "h264",
+                    "acodec": "aac",
+                    "height": item["height"],
+                    "protocol": urlsplit(value).scheme,
+                })
+
+            info = {
+                "id": _youtube_video_id(url) or "youtube-api",
+                "title": str(metadata.get("title") or "YouTube video"),
+                "uploader": metadata.get("uploader"),
+                "description": str(metadata.get("description") or ""),
+                "thumbnail": metadata.get("thumbnail"),
+                "webpage_url": url,
+                "formats": formats,
+                "_mediafetch_youtube_api": True,
+                "_mediafetch_youtube_api_formats": formats,
+            }
+            logger.info(
+                "YouTube API fallback recovered streams=%d heights=%s",
+                len(formats),
+                sorted({int(item.get("height") or 0) for item in formats if item.get("height")}, reverse=True),
+            )
+            return info, url, _base_opts()
+        except Exception as exc:
+            logger.warning(
+                "YouTube API fallback failed endpoint=%s error_type=%s error=%s",
+                endpoint, type(exc).__name__, exc,
+            )
+    return None
 
 
 def _extract_profiles(url: str) -> list[dict]:
@@ -2674,6 +2848,11 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
         if instagram_photo:
             return instagram_photo
 
+    if _platform_from_url(url) == "youtube":
+        api_fallback = _youtube_api_fallback(url)
+        if api_fallback:
+            return api_fallback
+
     for candidate in _url_variants(url):
         for profile in _extract_profiles(candidate):
             if extraction_deadline is not None and time.monotonic() >= extraction_deadline:
@@ -3318,6 +3497,30 @@ def _download_sync(
                     "This YouTube link points to an active live stream. "
                     "Please send the finished video URL after the live ends."
                 )
+
+            if (
+                platform == "youtube"
+                and mode != "audio"
+                and info.get("_mediafetch_youtube_api")
+            ):
+                selected = _entry_video_format(
+                    {"formats": info.get("_mediafetch_youtube_api_formats") or info.get("formats") or []},
+                    mode,
+                )
+                if selected and isinstance(selected.get("url"), str):
+                    logger.info(
+                        "YouTube API direct stream download starting height=%s",
+                        selected.get("height"),
+                    )
+                    return _download_direct_video(
+                        selected["url"],
+                        output_dir,
+                        str(info.get("id") or "youtube-api"),
+                        max_file_mb,
+                        notify,
+                        selected.get("http_headers") if isinstance(selected.get("http_headers"), dict) else None,
+                        platform="YouTube API",
+                    )
 
             opts.update(extraction_opts)
             # Extraction options are authoritative for cookies/client selection;
