@@ -3383,7 +3383,7 @@ def _download_direct_video(
             while True:
                 if cancel_event is not None and cancel_event.is_set():
                     raise DownloadCancelled(f"{platform} download cancelled.")
-                chunk = response.read(256 * 1024)
+                chunk = response.read(1024 * 1024)
                 if not chunk:
                     break
                 downloaded += len(chunk)
