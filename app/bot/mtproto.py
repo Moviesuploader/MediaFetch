@@ -184,6 +184,19 @@ class MTProtoUploader:
             # source of PEER_ID_INVALID on deployments where the user session
             # had not met that channel.
             destination = dump_channel_id or target_chat_id
+            if isinstance(destination, str) and destination.strip().lstrip("-").isdigit():
+                destination = int(destination.strip())
+            # Populate Pyrogram's peer/access-hash cache before sending. A
+            # freshly started in-memory session with no updates can otherwise
+            # know the numeric channel ID but still reject the send with
+            # PEER_ID_INVALID. This does not bypass Telegram membership rules:
+            # the MTProto account must have access to the bridge channel.
+            try:
+                await self.client.get_chat(destination)
+            except Exception as exc:
+                raise LargeUploadError(
+                    f"MTProto bridge peer is unavailable: {exc}"
+                ) from exc
             saved = await self.client.send_document(
                 destination,
                 str(part_path),
