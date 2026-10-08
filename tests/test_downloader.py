@@ -4,6 +4,7 @@ from urllib.parse import urlsplit
 from app.downloader.detector import detect_platform
 from app.downloader.service import (
     _entry_video_format,
+    _youtube_api_height,
     _facebook_video_page_fallback,
     _extract_profiles,
     _platform_from_url,
@@ -141,6 +142,56 @@ class DownloaderRoutingTests(unittest.TestCase):
         selected = _entry_video_format(entry, "1080p")
         self.assertEqual(selected["height"], 1080)
         self.assertEqual(selected["acodec"], "aac")
+
+
+    def test_youtube_api_height_parser(self):
+        self.assertEqual(_youtube_api_height("1080p"), 1080)
+        self.assertEqual(_youtube_api_height("720"), 720)
+        self.assertEqual(_youtube_api_height("1440x2560"), 1440)
+        self.assertIsNone(_youtube_api_height("best"))
+
+    def test_youtube_api_fallback_parses_direct_stream_payload(self):
+        import app.downloader.service as service
+
+        class FakeResponse:
+            status = 200
+            def read(self):
+                return (
+                    '{"title":"API video","uploader":"Channel","formats":['
+                    '{"url":"https://video.googlevideo.com/v/720.mp4","quality":"720p"},'
+                    '{"url":"https://video.googlevideo.com/v/1080.mp4","quality":"1080p"}]}'
+                ).encode()
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return None
+
+        class FakeUrlLib:
+            @staticmethod
+            def Request(*args, **kwargs):
+                return args[0]
+            @staticmethod
+            def urlopen(*args, **kwargs):
+                return FakeResponse()
+
+        original = service.urllib.request
+        service.urllib.request = FakeUrlLib
+        try:
+            result = service._youtube_api_fallback(
+                "https://www.youtube.com/watch?v=abc12345678"
+            )
+        finally:
+            service.urllib.request = original
+
+        self.assertIsNotNone(result)
+        info, final_url, _ = result
+        self.assertTrue(info["_mediafetch_youtube_api"])
+        self.assertEqual(final_url, "https://www.youtube.com/watch?v=abc12345678")
+        self.assertEqual(
+            [fmt["height"] for fmt in info["_mediafetch_youtube_api_formats"]],
+            [720, 1080],
+        )
+        self.assertEqual(info["title"], "API video")
 
     def test_tiktok_platform_profile(self):
         url = "https://www.tiktok.com/@user/video/123"
