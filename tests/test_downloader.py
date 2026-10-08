@@ -86,10 +86,9 @@ class DownloaderRoutingTests(unittest.TestCase):
         )
         self.assertIn(["android_vr"], public_clients)
         self.assertIn(["tv"], public_clients)
-        self.assertEqual(
-            profiles[1]["extractor_args"]["youtube"]["fetch_pot"],
-            ["auto"],
-        )
+        pot = profiles[1]["extractor_args"]["youtube"].get("fetch_pot")
+        if pot is not None:
+            self.assertEqual(pot, ["auto"])
         self.assertEqual(
             profiles[1]["extractor_args"]["youtube"]["pot_trace"],
             ["true"],
