@@ -1261,12 +1261,10 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                                         else None
                                     ),
                                 )
-                                if copied.document:
-                                    file_ids.append(copied.document.file_id)
-                                elif copied.video:
-                                    file_ids.append(copied.video.file_id)
-                                elif copied.photo:
-                                    file_ids.append(copied.photo[-1].file_id)
+                                # Bot API copyMessage returns MessageId rather
+                                # than the copied Message object. Large bridge
+                                # uploads are therefore intentionally not added
+                                # to the normal file_id cache here.
                             # Do not run _send_media_message() below: that
                             # would upload the same >50 MB file a second time.
                             continue
