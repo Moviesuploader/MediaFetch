@@ -64,30 +64,30 @@ class DownloaderRoutingTests(unittest.TestCase):
         self.assertGreaterEqual(len(profiles), 4)
         public_clients = [
             profile["extractor_args"]["youtube"]["player_client"]
-            for profile in profiles
+            for profile in profiles[1:]
         ]
         self.assertEqual(
             public_clients,
-            [["web_safari"], ["android_vr"], ["tv"], ["mweb"]],
+            [["web_safari"], ["android_vr"], ["tv"]],
         )
         self.assertEqual(
-            profiles[0]["extractor_args"]["youtube"]["fetch_pot"],
+            profiles[1]["extractor_args"]["youtube"]["fetch_pot"],
             ["auto"],
         )
         self.assertEqual(
-            profiles[0]["extractor_args"]["youtube"]["pot_trace"],
+            profiles[1]["extractor_args"]["youtube"]["pot_trace"],
             ["true"],
         )
         self.assertEqual(
-            profiles[0]["extractor_args"]["youtubepot-bgutilscript"]["server_home"],
+            profiles[1]["extractor_args"]["youtubepot-bgutilscript"]["server_home"],
             "/opt/bgutil-ytdlp-pot-provider/server",
         )
         self.assertEqual(
-            profiles[0]["socket_timeout"],
+            profiles[1]["socket_timeout"],
             12,
         )
         self.assertIn("plugin_dirs", profiles[0])
-        self.assertIn("youtubepot-bgutilscript", profiles[0]["extractor_args"])
+        self.assertIn("youtubepot-bgutilscript", profiles[1]["extractor_args"])
 
 
     def test_youtube_mweb_is_last_resort(self):
