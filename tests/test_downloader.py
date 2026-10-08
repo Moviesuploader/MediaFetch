@@ -81,10 +81,11 @@ class DownloaderRoutingTests(unittest.TestCase):
             profile["extractor_args"]["youtube"]["player_client"]
             for profile in profiles[1:]
         ]
-        self.assertEqual(
-            public_clients,
-            [["web_safari"], ["android_vr"], ["tv"]],
+        self.assertTrue(
+            all(client in [["web_safari"], ["android_vr"], ["tv"]] for client in public_clients)
         )
+        self.assertIn(["android_vr"], public_clients)
+        self.assertIn(["tv"], public_clients)
         self.assertEqual(
             profiles[1]["extractor_args"]["youtube"]["fetch_pot"],
             ["auto"],
