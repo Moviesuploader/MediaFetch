@@ -169,6 +169,60 @@ class DownloaderRoutingTests(unittest.TestCase):
         self.assertEqual(selected["acodec"], "aac")
 
 
+    def test_youtube_api_rejects_generic_json_url_without_media_signal(self):
+        import app.downloader.service as service
+
+        original_urlopen = service.urllib.request.urlopen
+
+        class FakeResponse:
+            status = 200
+            headers = {"Content-Type": "application/json"}
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self, *args):
+                return b'{"url":"https://resolver.example/api/123"}'
+
+        service.urllib.request.urlopen = lambda *args, **kwargs: FakeResponse()
+        try:
+            result = service._youtube_api_fallback("https://youtu.be/dQw4w9WgXcQ")
+        finally:
+            service.urllib.request.urlopen = original_urlopen
+
+        assert result is None
+
+    def test_youtube_api_codec_metadata_preserves_av1_for_candidate_filtering(self):
+        import app.downloader.service as service
+
+        original_urlopen = service.urllib.request.urlopen
+
+        class FakeResponse:
+            status = 200
+            headers = {"Content-Type": "application/json"}
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self, *args):
+                return (
+                    b'{"formats":['
+                    b'{"quality":"1080p","url":"https://cdn.example/av1.mp4","height":1080,"vcodec":"av01.0.08M.08","acodec":"mp4a.40.2"},'
+                    b'{"quality":"720p","url":"https://cdn.example/h264.mp4","height":720,"vcodec":"h264","acodec":"mp4a.40.2"}]}'
+                )
+
+        service.urllib.request.urlopen = lambda *args, **kwargs: FakeResponse()
+        try:
+            result = service._youtube_api_fallback("https://youtu.be/dQw4w9WgXcQ")
+        finally:
+            service.urllib.request.urlopen = original_urlopen
+
+        assert result is not None
+        info, _, _ = result
+        codecs = {(item["height"], item["vcodec"]) for item in info["formats"]}
+        assert (1080, "av01.0.08m.08") in codecs
+        assert (720, "h264") in codecs
+
     def test_youtube_api_codec_metadata_defaults_to_unknown(self):
         import app.downloader.service as service
 
