@@ -457,7 +457,25 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
                 if isinstance(value, str) and value.startswith(("http://", "https://")):
                     if is_direct_video(value, str(key), local_height) and value not in seen:
                         seen.add(value)
-                        found.append({"url": value, "height": local_height or 0})
+                        normalized_key = re.sub(r"[^a-z0-9]", "", str(key).lower())
+                        host = urlsplit(value).netloc.lower()
+                        clean_path = urlsplit(value).path.lower()
+                        query_text = urlsplit(value).query.lower()
+                        if normalized_key in {re.sub(r"[^a-z0-9]", "", item.lower()) for item in direct_keys}:
+                            priority = 100
+                        elif "googlevideo.com" in host:
+                            priority = 90
+                        elif clean_path.endswith((".mp4", ".m4v", ".webm")):
+                            priority = 80
+                        elif "mime=video" in query_text:
+                            priority = 70
+                        else:
+                            priority = 20
+                        found.append({
+                            "url": value,
+                            "height": local_height or 0,
+                            "priority": priority,
+                        })
                 elif isinstance(value, (dict, list)):
                     walk(value, local_height)
         elif isinstance(node, list):
@@ -509,6 +527,7 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
                     "acodec": "aac",
                     "height": item["height"],
                     "protocol": urlsplit(value).scheme,
+                    "preference": int(item.get("priority") or 0),
                     "http_headers": {
                         "User-Agent": (
                             "Mozilla/5.0 (X11; Linux x86_64) "
@@ -3675,6 +3694,7 @@ def _download_sync(
                     key=lambda fmt: (
                         int(fmt.get("height") or 0) <= (requested_height or 10**9),
                         int(fmt.get("height") or 0),
+                        int(fmt.get("preference") or 0),
                     ),
                     reverse=True,
                 )
