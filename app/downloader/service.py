@@ -495,12 +495,42 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
                             or node.get("type")
                             or ""
                         ).lower()
+                        url_query = urlsplit(value).query.lower()
+                        codec_match = re.search(r"codecs?=([^&]+)", url_query)
+                        codec_hint = (
+                            codec_match.group(1).replace("%22", "").replace('"', "")
+                            if codec_match
+                            else ""
+                        )
+                        if codec_video is None and codec_hint:
+                            if any(token in codec_hint for token in ("avc1", "avc3", "h264")):
+                                codec_video = "h264"
+                            elif any(token in codec_hint for token in ("av01", "av1")):
+                                codec_video = "av1"
+                            elif "vp9" in codec_hint:
+                                codec_video = "vp9"
+                            elif "hev1" in codec_hint or "hvc1" in codec_hint:
+                                codec_video = "hevc"
+                        if codec_audio is None and codec_hint:
+                            if "mp4a" in codec_hint or "aac" in codec_hint:
+                                codec_audio = "aac"
+                            elif "opus" in codec_hint:
+                                codec_audio = "opus"
                         if codec_video is None and "video/" in mime:
                             codec_video = "unknown"
+                        if codec_audio is None and "audio/" in mime:
+                            codec_audio = "unknown"
+                        codec_bonus = 0
+                        if codec_video in {"h264", "avc1", "avc3"}:
+                            codec_bonus += 30
+                        elif codec_video in {"av1", "vp9"}:
+                            codec_bonus -= 10
+                        if codec_audio in {"aac", "mp4a"}:
+                            codec_bonus += 10
                         found.append({
                             "url": value,
                             "height": local_height or 0,
-                            "priority": priority,
+                            "priority": priority + codec_bonus,
                             "vcodec": codec_video or "unknown",
                             "acodec": codec_audio or "unknown",
                         })
@@ -542,6 +572,13 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
                 logger.warning("YouTube API returned no direct video streams endpoint=%s", endpoint)
                 continue
 
+            found.sort(
+                key=lambda item: (
+                    int(item.get("height") or 0),
+                    int(item.get("priority") or 0),
+                ),
+                reverse=True,
+            )
             formats = []
             for index, item in enumerate(found, 1):
                 value = item["url"]
