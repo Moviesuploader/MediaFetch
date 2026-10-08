@@ -8,6 +8,7 @@ import logging
 import re
 import secrets
 import threading
+import time
 from pathlib import Path
 from urllib.parse import quote_plus
 
@@ -214,8 +215,15 @@ async def _dump_messages(context: ContextTypes.DEFAULT_TYPE, messages: list, use
         logger.warning("Dump channel send failed error_type=%s error=%s", type(exc).__name__, exc)
 
 
-async def _send_media_message(message, path: Path | None = None, file_id: str | None = None,
-                              kind: str = "document", caption: str = ""):
+async def _send_media_message(
+    message,
+    path: Path | None = None,
+    file_id: str | None = None,
+    kind: str = "document",
+    caption: str = "",
+    upload_progress=None,
+    cancel_event=None,
+):
     if file_id:
         if kind == "video":
             return await message.reply_video(video=file_id, caption=caption, parse_mode="HTML", supports_streaming=True)
@@ -226,7 +234,15 @@ async def _send_media_message(message, path: Path | None = None, file_id: str | 
     if path is None:
         raise ValueError("path or file_id is required")
 
-    with path.open("rb") as media:
+    with path.open("rb") as raw_media:
+        media = raw_media
+        if upload_progress is not None:
+            media = _ProgressFile(
+                raw_media,
+                path.stat().st_size,
+                upload_progress,
+                cancel_event,
+            )
         if kind == "video":
             thumbnail_file = None
             thumbnail_handle = None
@@ -479,6 +495,56 @@ async def _send_media_album(
                     caption=caption if start == 0 else "",
                 ))
     return sent
+
+
+class _ProgressFile:
+    """File-like wrapper that reports actual multipart upload progress."""
+
+    def __init__(self, file_handle, total_bytes: int, progress_callback, cancel_event=None):
+        self._file = file_handle
+        self._total = max(0, int(total_bytes))
+        self._callback = progress_callback
+        self._cancel_event = cancel_event
+        self._uploaded = 0
+        self._started = time.monotonic()
+        self._last_report = 0.0
+
+    def read(self, size=-1):
+        if self._cancel_event is not None and self._cancel_event.is_set():
+            raise DownloadError("Upload cancelled by user.")
+        data = self._file.read(size)
+        if data:
+            self._uploaded += len(data)
+            now = time.monotonic()
+            if self._uploaded >= self._total or now - self._last_report >= 0.8:
+                self._last_report = now
+                elapsed = max(now - self._started, 0.001)
+                percent = self._uploaded / self._total * 100 if self._total else 0.0
+                speed = self._uploaded / elapsed / (1024 * 1024)
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(
+                        self._callback(
+                            percent,
+                            f"{self._uploaded / (1024 * 1024):.1f}/"
+                            f"{self._total / (1024 * 1024):.1f} MB • {speed:.1f} MB/s",
+                        )
+                    )
+                except RuntimeError:
+                    pass
+        return data
+
+    def seek(self, *args):
+        return self._file.seek(*args)
+
+    def tell(self):
+        return self._file.tell()
+
+    def fileno(self):
+        return self._file.fileno()
+
+    def __getattr__(self, name):
+        return getattr(self._file, name)
 
 
 def _cancel_keyboard(request_id: str) -> InlineKeyboardMarkup:
@@ -1229,39 +1295,33 @@ async def _download_choice_worker(update: Update, context: ContextTypes.DEFAULT_
                 "and the MTProto user-session uploader is unavailable."
             )
 
-        upload_running = not use_mtproto
+        async def upload_progress(percent: float, detail: str) -> None:
+            if cancel_event.is_set():
+                return
+            nonlocal last_text, last_progress_edit
+            now = asyncio.get_running_loop().time()
+            if percent < 100 and now - last_progress_edit < 0.8:
+                return
+            bar = progress_bar(percent)
+            text = (
+                f"📤 <b>Telegram Upload</b> • {platform}\n"
+                f"🎯 <b>Mode:</b> {label}\n"
+                f"⏫ <code>[{bar}] {percent:5.1f}%</code>\n"
+                f"⚡ {detail}"
+            )
+            if text == last_text or status is None:
+                return
+            last_text = text
+            last_progress_edit = now
+            try:
+                await status.edit_text(
+                    text,
+                    reply_markup=_cancel_keyboard(request_id),
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
 
-        async def upload_indicator() -> None:
-            frames = [
-                "▰▱▱▱▱▱▱▱▱▱",
-                "▰▰▱▱▱▱▱▱▱▱",
-                "▰▰▰▱▱▱▱▱▱▱",
-                "▰▰▰▰▱▱▱▱▱▱",
-                "▰▰▰▰▰▱▱▱▱▱",
-                "▰▰▰▰▰▰▱▱▱▱",
-                "▰▰▰▰▰▰▰▱▱▱",
-                "▰▰▰▰▰▰▰▰▱▱",
-                "▰▰▰▰▰▰▰▰▰▱",
-                "▰▰▰▰▰▰▰▰▰▰",
-            ]
-            index = 0
-            while upload_running:
-                try:
-                    if cancel_event.is_set():
-                        return
-                    await status.edit_text(
-                        f"📤 <b>Uploading to Telegram…</b>\n"
-                        f"<code>[{frames[index % len(frames)]}]</code>\n"
-                        "⚡ Upload in progress…",
-                        reply_markup=_cancel_keyboard(request_id),
-                        parse_mode="HTML",
-                    )
-                except Exception:
-                    pass
-                index += 1
-                await asyncio.sleep(1.2)
-
-        upload_task = asyncio.create_task(upload_indicator())
         file_ids: list[str] = []
         sent_messages_for_dump: list = []
         try:
@@ -1377,11 +1437,22 @@ async def _download_choice_worker(update: Update, context: ContextTypes.DEFAULT_
                         )
                         continue
 
+                    await upload_progress(
+                        0,
+                        f"0.0/{item.stat().st_size / (1024 * 1024):.1f} MB • preparing…",
+                    )
                     sent = await _send_media_message(
                         query.message,
                         path=item,
                         kind=kind,
                         caption=caption,
+                        upload_progress=upload_progress,
+                        cancel_event=cancel_event,
+                    )
+                    await upload_progress(
+                        100,
+                        f"{item.stat().st_size / (1024 * 1024):.1f}/"
+                        f"{item.stat().st_size / (1024 * 1024):.1f} MB • complete",
                     )
                     sent_messages_for_dump.append(sent)
                     if kind == "video" and sent.video:
@@ -1391,8 +1462,7 @@ async def _download_choice_worker(update: Update, context: ContextTypes.DEFAULT_
                     elif sent.document:
                         file_ids.append(sent.document.file_id)
         finally:
-            upload_running = False
-            await upload_task
+            pass
 
         media_kinds = [_media_kind(item) for item in paths]
         if file_ids:
