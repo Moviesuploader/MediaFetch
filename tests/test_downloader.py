@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 from urllib.parse import urlsplit
 
 from app.downloader.detector import detect_platform
@@ -8,6 +9,7 @@ from app.downloader.service import (
     _youtube_video_id,
     _facebook_video_page_fallback,
     _extract_profiles,
+    _extract_with_fallback,
     _platform_from_url,
     _quality_selector,
     _url_variants,
@@ -117,6 +119,31 @@ class DownloaderRoutingTests(unittest.TestCase):
     def test_facebook_uses_browser_impersonation(self):
         profiles = _extract_profiles("https://www.facebook.com/reel/123")
         self.assertTrue(all(profile.get("impersonate") == "chrome" for profile in profiles))
+
+    def test_facebook_video_share_does_not_fall_back_to_photo(self):
+        import app.downloader.service as service
+
+        video_info = ({"formats": [{"url": "https://cdn.example/video.mp4"}]}, "https://www.facebook.com/reel/123", {})
+        with patch.object(service, "_extract_profiles", return_value=[]), \\
+             patch.object(service, "_facebook_video_page_fallback", return_value=None), \\
+             patch.object(service, "_facebook_curl_photo_fallback", side_effect=AssertionError("video share must not use photo fallback")), \\
+             patch.object(service, "_facebook_authenticated_photo_fallback", side_effect=AssertionError("video share must not use photo fallback")), \\
+             patch.object(service, "_meta_public_page_fallback", return_value=None):
+            with self.assertRaises(Exception):
+                _extract_with_fallback("https://www.facebook.com/share/v/ABC123/")
+
+    def test_threads_uses_secondary_fallbacks_when_crawler_misses(self):
+        import app.downloader.service as service
+
+        expected = ({"formats": [{"url": "https://cdn.example/threads.mp4"}]}, "https://www.threads.com/@u/post/123", {})
+        with patch.object(service, "_threads_crawler_fallback", return_value=None), \\
+             patch.object(service, "_threads_graphql_fallback", return_value=expected) as graphql, \\
+             patch.object(service, "_threads_authenticated_fallback", return_value=None), \\
+             patch.object(service, "_threads_browser_video_fallback", return_value=None), \\
+             patch.object(service, "_threads_api_fallback", return_value=None):
+            result = _extract_with_fallback("https://www.threads.com/share/ABC123/")
+        self.assertEqual(result, expected)
+        graphql.assert_called_once()
 
     def test_facebook_public_page_fallback_extracts_signed_progressive_urls(self):
         import app.downloader.service as service
