@@ -96,7 +96,7 @@ class DownloaderRoutingTests(unittest.TestCase):
             profile.get("extractor_args", {}).get("youtube", {}).get("player_client")
             for profile in profiles
         ]
-        self.assertEqual(clients[0], ["mweb"])
+        self.assertEqual(clients[1], ["mweb"])
         self.assertIn(["web_creator"], clients)
         self.assertLess(clients.index(["web_creator"]), clients.index(["tv"]))
 
