@@ -258,7 +258,6 @@ async def _send_media_message(
     caption: str = "",
     upload_progress=None,
     cancel_event=None,
-,
     thumbnail_url: str | None = None,
 ):
     if file_id:
