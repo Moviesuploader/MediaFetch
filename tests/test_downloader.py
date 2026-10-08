@@ -169,6 +169,38 @@ class DownloaderRoutingTests(unittest.TestCase):
         self.assertEqual(selected["acodec"], "aac")
 
 
+    def test_youtube_api_codec_metadata_defaults_to_unknown(self):
+        import app.downloader.service as service
+
+        original_base = service._base_opts
+        original_urlopen = service.urllib.request.urlopen
+
+        class FakeResponse:
+            status = 200
+            headers = {"Content-Type": "application/json"}
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self, *args):
+                return (
+                    b'{"formats":[{"quality":"1080p",'
+                    b'"url":"https://cdn.example/video.mp4",'
+                    b'"height":1080}]}'
+                )
+
+        service.urllib.request.urlopen = lambda *args, **kwargs: FakeResponse()
+        try:
+            result = service._youtube_api_fallback("https://youtu.be/dQw4w9WgXcQ")
+        finally:
+            service.urllib.request.urlopen = original_urlopen
+            service._base_opts = original_base
+
+        self.assertIsNotNone(result)
+        info, _, _ = result
+        self.assertEqual(info["formats"][0]["vcodec"], "unknown")
+        self.assertEqual(info["formats"][0]["acodec"], "unknown")
+
     def test_youtube_api_height_parser(self):
         self.assertEqual(_youtube_api_height("1080p"), 1080)
         self.assertEqual(_youtube_api_height("720"), 720)
