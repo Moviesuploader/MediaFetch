@@ -9,6 +9,7 @@ import re
 import secrets
 import threading
 import time
+import urllib.request
 from pathlib import Path
 from urllib.parse import quote_plus
 
@@ -59,6 +60,40 @@ SUPPORTED_TEXT = (
     "YouTube • Instagram • Facebook • Reddit • X/Twitter • "
     "TikTok • Pinterest • Threads"
 )
+
+
+def _prepare_source_thumbnail(thumbnail_url: str | None, path: Path) -> Path | None:
+    """Download and normalize a source thumbnail for Telegram video upload."""
+    if not isinstance(thumbnail_url, str) or not thumbnail_url.startswith(("http://", "https://")):
+        return None
+    target = path.with_name(f"{path.stem}-source-thumb.jpg")
+    try:
+        request = urllib.request.Request(thumbnail_url, headers={"User-Agent": "Mozilla/5.0", "Accept": "image/avif,image/webp,image/apng,image/jpeg,image/png,*/*;q=0.8"})
+        with urllib.request.urlopen(request, timeout=15) as response:
+            data = response.read(5 * 1024 * 1024 + 1)
+            content_type = (response.headers.get("Content-Type") or "").lower()
+        if not data or len(data) > 5 * 1024 * 1024 or not content_type.startswith("image/"):
+            return None
+        from PIL import Image, ImageOps
+        with Image.open(io.BytesIO(data)) as image:
+            image = ImageOps.exif_transpose(image).convert("RGB")
+            image.thumbnail((320, 320), Image.Resampling.LANCZOS)
+            image.save(target, format="JPEG", quality=88, optimize=True)
+        if target.stat().st_size > 190 * 1024:
+            with Image.open(target) as image:
+                for quality in (78, 68, 58):
+                    image.save(target, format="JPEG", quality=quality, optimize=True)
+                    if target.stat().st_size <= 190 * 1024:
+                        break
+        if target.stat().st_size > 200 * 1024:
+            target.unlink(missing_ok=True)
+            return None
+        return target
+    except Exception as exc:
+        logger.info("Source thumbnail unavailable; using generated preview error_type=%s", type(exc).__name__)
+        try: target.unlink(missing_ok=True)
+        except OSError: pass
+        return None
 
 
 def _cache_key(url: str, mode: str) -> str:
@@ -223,6 +258,8 @@ async def _send_media_message(
     caption: str = "",
     upload_progress=None,
     cancel_event=None,
+,
+    thumbnail_url: str | None = None,
 ):
     if file_id:
         if kind == "video":
@@ -254,36 +291,31 @@ async def _send_media_message(
         if kind == "video":
             thumbnail_file = None
             thumbnail_handle = None
+            source_thumb_path = None
+            generated_thumb_path = None
             try:
-                # Telegram does not always generate a poster frame for videos
-                # uploaded by bots. Extract one locally so Facebook,
-                # Instagram, YouTube, Reddit, etc. have a visible preview.
-                thumb_path = path.with_name(f"{path.stem}-thumb.jpg")
-                process = await asyncio.create_subprocess_exec(
-                    "ffmpeg", "-y", "-ss", "00:00:01", "-i", str(path),
-                    "-frames:v", "1", "-vf", "scale=640:-2",
-                    "-q:v", "3", str(thumb_path),
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-                await asyncio.wait_for(process.wait(), timeout=15)
-                if process.returncode == 0 and thumb_path.is_file() and thumb_path.stat().st_size:
+                source_thumb_path = await asyncio.to_thread(_prepare_source_thumbnail, thumbnail_url, path)
+                thumb_path = source_thumb_path
+                if thumb_path is None:
+                    generated_thumb_path = path.with_name(f"{path.stem}-thumb.jpg")
+                    process = await asyncio.create_subprocess_exec(
+                        "ffmpeg", "-y", "-ss", "00:00:01", "-i", str(path),
+                        "-frames:v", "1", "-vf", "scale=320:-2", "-q:v", "4", str(generated_thumb_path),
+                        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    await asyncio.wait_for(process.wait(), timeout=15)
+                    if process.returncode == 0 and generated_thumb_path.is_file() and generated_thumb_path.stat().st_size:
+                        thumb_path = generated_thumb_path
+                if thumb_path is not None and thumb_path.is_file():
                     thumbnail_handle = thumb_path.open("rb")
                     thumbnail_file = InputFile(thumbnail_handle, filename="thumbnail.jpg")
-                return await message.reply_video(
-                    video=media,
-                    caption=caption,
-                    parse_mode="HTML",
-                    supports_streaming=True,
-                    thumbnail=thumbnail_file,
-                )
+                return await message.reply_video(video=media, caption=caption, parse_mode="HTML", supports_streaming=True, thumbnail=thumbnail_file)
             finally:
-                if thumbnail_handle:
-                    thumbnail_handle.close()
-                try:
-                    path.with_name(f"{path.stem}-thumb.jpg").unlink(missing_ok=True)
-                except OSError:
-                    pass
+                if thumbnail_handle: thumbnail_handle.close()
+                for cleanup in (source_thumb_path, generated_thumb_path):
+                    if cleanup:
+                        try: cleanup.unlink(missing_ok=True)
+                        except OSError: pass
         if kind == "photo" and path.stat().st_size <= 10 * 1024 * 1024:
             return await message.reply_photo(photo=media, caption=caption)
         return await message.reply_document(document=media, caption=caption)
@@ -1456,6 +1488,7 @@ async def _download_choice_worker(update: Update, context: ContextTypes.DEFAULT_
                         caption=caption,
                         upload_progress=upload_progress,
                         cancel_event=cancel_event,
+                        thumbnail_url=(info.thumbnail if isinstance(info, MediaInfo) and platform == "YouTube" else None),
                     )
                     await upload_progress(
                         100,
