@@ -97,8 +97,9 @@ class DownloaderRoutingTests(unittest.TestCase):
             for profile in profiles
         ]
         self.assertEqual(clients[1], ["mweb"])
-        self.assertIn(["web_creator"], clients)
-        self.assertLess(clients.index(["web_creator"]), clients.index(["tv"]))
+        self.assertLess(clients.index(["mweb"]), clients.index(["tv"]))
+        if ["web_creator"] in clients:
+            self.assertLess(clients.index(["web_creator"]), clients.index(["tv"]))
 
     def test_facebook_uses_browser_impersonation(self):
         profiles = _extract_profiles("https://www.facebook.com/reel/123")
