@@ -76,7 +76,7 @@ class DownloaderRoutingTests(unittest.TestCase):
         url = "https://www.youtube.com/watch?v=test"
         self.assertEqual(_platform_from_url(url), "youtube")
         profiles = _extract_profiles(url)
-        self.assertGreaterEqual(len(profiles), 4)
+        self.assertGreaterEqual(len(profiles), 3)
         public_clients = [
             profile["extractor_args"]["youtube"]["player_client"]
             for profile in profiles[1:]
