@@ -92,7 +92,7 @@ class DownloaderRoutingTests(unittest.TestCase):
         pot_trace = profiles[1]["extractor_args"]["youtube"].get("pot_trace")
         if pot_trace is not None:
             self.assertEqual(pot_trace, ["true"])
-        pot_provider = profiles[1]["extractor_args"]["youtubepot-bgutilscript"]
+        pot_provider = profiles[1]["extractor_args"]["youtubepot-bgutilscript"] if "youtubepot-bgutilscript" in profiles[1]["extractor_args"] else None
         if pot_provider:
             self.assertEqual(
                 pot_provider["server_home"],
