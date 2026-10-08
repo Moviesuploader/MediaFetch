@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from datetime import datetime, timezone
 from typing import Any
+
+logger = logging.getLogger("mediafetch.storage")
 
 try:
     from pymongo import MongoClient, ReturnDocument
@@ -29,9 +32,28 @@ class Storage:
         self._db = None
         try:
             from app.core.config import settings
-            if settings.mongodb_uri and MongoClient is not None:
-                self._client = MongoClient(settings.mongodb_uri, serverSelectionTimeoutMS=2500)
+            if not settings.mongodb_uri:
+                logger.warning(
+                    "MongoDB persistence disabled: MONGODB_URI is empty; "
+                    "runtime settings will reset on restart."
+                )
+            elif MongoClient is None:
+                logger.warning(
+                    "MongoDB persistence unavailable: pymongo is not installed."
+                )
+            else:
+                self._client = MongoClient(
+                    settings.mongodb_uri,
+                    serverSelectionTimeoutMS=5000,
+                    connectTimeoutMS=5000,
+                    socketTimeoutMS=5000,
+                )
+                # Force an actual connection check. MongoClient is lazy, so
+                # creating the client alone is not enough to know whether
+                # persistence is really available.
+                self._client.admin.command("ping")
                 self._db = self._client[settings.mongodb_db]
+                self._db.settings.create_index("key", unique=True)
                 self._db.cache.create_index("key", unique=True)
                 self._db.users.create_index("user_id", unique=True)
                 self._db.usage.create_index([("user_id", 1), ("day", 1)], unique=True)
@@ -40,7 +62,23 @@ class Storage:
                 self._db.payments.create_index("payment_id", unique=True)
                 self._db.payments.create_index("utr", unique=True)
                 self._db.payments.create_index([("status", 1), ("created_at", -1)])
-        except Exception:
+                logger.info(
+                    "MongoDB persistence connected db=%s; channel/runtime settings "
+                    "will survive restarts.",
+                    settings.mongodb_db,
+                )
+        except Exception as exc:
+            logger.warning(
+                "MongoDB persistence connection failed; using memory fallback "
+                "and runtime settings will reset on restart. error_type=%s error=%s",
+                type(exc).__name__,
+                exc,
+            )
+            try:
+                if self._client is not None:
+                    self._client.close()
+            except Exception:
+                pass
             self._client = None
             self._db = None
 
