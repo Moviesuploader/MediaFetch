@@ -2818,7 +2818,7 @@ def _reddit_json_fallback(url: str) -> tuple[dict, str, dict] | None:
 def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
     last_error: Exception | None = None
     extraction_deadline = (
-        time.monotonic() + max(20, settings.extraction_timeout_seconds, 45)
+        time.monotonic() + max(20, min(settings.extraction_timeout_seconds, 30))
         if _platform_from_url(url) == "youtube"
         else None
     )
