@@ -960,19 +960,26 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             job = _ACTIVE_JOBS.get((user_id, request_id))
         if job:
             task, cancel_event = job
+            # Signal the blocking downloader/FFmpeg work first. The worker also
+            # owns the Bot API upload, so cancel the asyncio task after the
+            # cooperative signal to interrupt an in-flight upload request.
             cancel_event.set()
             task.cancel()
-            # Wait briefly for the worker's finally block to release the
-            # active-job slot. This lets the user start a new task immediately
-            # after pressing ❌ instead of racing the cleanup.
             try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
+                await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
             except (asyncio.CancelledError, asyncio.TimeoutError):
+                # The download layer now checks cancel_event inside direct HTTP
+                # reads and FFmpeg normalization. If a third-party extractor is
+                # still unwinding, its temporary file is cleaned by the worker.
                 pass
             except Exception:
                 logger.exception("Cancelled media task cleanup failed")
             try:
-                await query.edit_message_text("❌ <b>Task cancelled.</b>", parse_mode="HTML")
+                await query.edit_message_text(
+                    "❌ <b>Task cancelled.</b>\n"
+                    "You can start another task now.",
+                    parse_mode="HTML",
+                )
             except Exception:
                 pass
             return
