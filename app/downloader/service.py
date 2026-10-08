@@ -335,7 +335,7 @@ def _youtube_video_id(url: str) -> str | None:
     match = re.search(r"(?:^|[?&])v=([A-Za-z0-9_-]{6,})", parts.query)
     if match:
         return match.group(1)
-    match = re.search(r"/shorts/([A-Za-z0-9_-]{6,})", parts.path)
+    match = re.search(r"/(?:shorts|live)/([A-Za-z0-9_-]{6,})", parts.path)
     return match.group(1) if match else None
 
 
@@ -345,10 +345,14 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
         return None
 
     base_url = settings.youtube_api_url.rstrip("/")
-    query = urlencode({"url": url})
-    # The release advertises the root live API endpoint. Do not probe an
-    # undocumented /api route: a slow second request used to add another full
-    # timeout before yt-dlp could start.
+    api_url = url
+    # Normalize /live/<id> to the equivalent watch URL before calling the
+    # external API. Some upstream resolvers handle /live routes much slower
+    # even though the same video ID resolves immediately as watch?v=<id>.
+    video_id = _youtube_video_id(url)
+    if video_id and "/live/" in urlsplit(url).path:
+        api_url = f"https://www.youtube.com/watch?v={video_id}"
+    query = urlencode({"url": api_url})
     endpoints = [f"{base_url}?{query}"]
 
     direct_keys = {
@@ -426,13 +430,19 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
             request = urllib.request.Request(
                 endpoint,
                 headers={
-                    "User-Agent": "MediaFetch/1.0",
+                    "User-Agent": (
+                        "Mozilla/5.0 (X11; Linux x86_64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/146.0.0.0 Safari/537.36"
+                    ),
                     "Accept": "application/json,text/plain;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Referer": "https://www.youtube.com/",
                 },
             )
             with urllib.request.urlopen(
                 request,
-                timeout=max(1, min(settings.youtube_api_timeout_seconds, 5)),
+                timeout=max(1, min(settings.youtube_api_timeout_seconds, 12)),
             ) as response:
                 if getattr(response, "status", 200) >= 400:
                     continue
