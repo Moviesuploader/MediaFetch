@@ -177,8 +177,15 @@ class MTProtoUploader:
             await self._progress(progress_callback, global_current, total_size, started)
 
         try:
+            # Upload directly to the bridge channel when configured. The
+            # previous implementation uploaded to Saved Messages first and
+            # then tried to copy that message into the bridge. That requires
+            # the MTProto session to resolve the bridge as a peer and was the
+            # source of PEER_ID_INVALID on deployments where the user session
+            # had not met that channel.
+            destination = dump_channel_id or target_chat_id
             saved = await self.client.send_document(
-                "me",
+                destination,
                 str(part_path),
                 caption=caption,
                 force_document=True,
@@ -186,29 +193,7 @@ class MTProtoUploader:
             )
             if not saved:
                 raise LargeUploadError("Telegram cancelled the MTProto upload.")
-
-            # Prefer a dump/bridge channel for large files. The MTProto
-            # user session may not have the requesting user's peer cached, which
-            # causes PEER_ID_INVALID even though the Bot API can message that
-            # user. The bot already has access to the user's PM, so the bridge
-            # lets the Bot API perform the final server-side copy.
-            if dump_channel_id:
-                delivered = await self._copy_to_target(
-                    "me",
-                    saved.id,
-                    dump_channel_id,
-                )
-                return delivered
-
-            # Preserve the old direct-delivery path when no bridge channel is
-            # configured. This can still work when the MTProto account has
-            # already met the target peer.
-            return await self._copy_to_target(
-                "me",
-                saved.id,
-                target_chat_id,
-                reply_to_message_id=reply_to_message_id,
-            )
+            return saved
         except LargeUploadError:
             raise
         except Exception as exc:
