@@ -360,7 +360,7 @@ def _youtube_video_id(url: str) -> str | None:
         # /live/UC... is commonly a channel-live URL, not a video URL.
         # Only normalize a /live path to watch?v= when it looks like the
         # standard 11-character YouTube video ID.
-        if len(value) == 11:
+        if len(value) == 11 and not value.startswith("UC"):
             return value
     return None
 
