@@ -3079,6 +3079,7 @@ async def download_media(
     mode: str = "best",
     max_file_mb: int | None = None,
     progress_callback: ProgressCallback | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> Path | list[Path]:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     if max_file_mb is None:
@@ -3103,6 +3104,7 @@ async def download_media(
         mode,
         max_file_mb,
         notify,
+        cancel_event,
     )
 
 
@@ -3570,6 +3572,7 @@ def _download_sync(
     mode: str,
     max_file_mb: int,
     notify: Callable[[float, str], None],
+    cancel_event: threading.Event | None = None,
 ) -> Path | list[Path]:
     selector = _quality_selector(mode)
     platform = _platform_from_url(url)
@@ -3608,6 +3611,8 @@ def _download_sync(
 
     def progress_hook(data: dict) -> None:
         nonlocal last_update
+        if cancel_event is not None and cancel_event.is_set():
+            raise DownloadCancelled("Download cancelled by user.")
         if data.get("status") == "downloading":
             now = time.monotonic()
             if now - last_update < 1.5:
