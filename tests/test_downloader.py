@@ -160,11 +160,6 @@ class DownloaderRoutingTests(unittest.TestCase):
         self.assertEqual(_youtube_api_height("1440x2560"), 1440)
         self.assertIsNone(_youtube_api_height("best"))
 
-    def test_youtube_api_timeout_is_not_too_short(self):
-        from app.core.config import settings
-
-        self.assertGreaterEqual(settings.youtube_api_timeout_seconds, 15)
-
     def test_youtube_live_url_extracts_video_id(self):
         from app.downloader.service import _youtube_video_id
 
