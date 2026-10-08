@@ -271,6 +271,19 @@ def _url_variants(url: str) -> list[str]:
                 if raw_host != fb_host:
                     add_variant(fb_host)
 
+        elif host in {"youtube.com", "m.youtube.com"} or host.endswith(".youtube.com"):
+            # A URL such as /live/UCxxxxxxxx is a channel's Live surface.
+            # Do not reinterpret the channel ID as a video ID. Give yt-dlp
+            # the canonical ID-based channel Live URL as a fallback.
+            live_match = re.fullmatch(r"/live/([A-Za-z0-9_-]+)", path.rstrip("/"))
+            if live_match and live_match.group(1).startswith("UC"):
+                channel_id = live_match.group(1)
+                add_variant(
+                    "www.youtube.com",
+                    new_path=f"/channel/{channel_id}/live",
+                    query={},
+                )
+
         elif host in {"twitter.com", "mobile.twitter.com", "m.twitter.com", "x.com", "mobile.x.com"}:
             if raw_host != "x.com":
                 add_variant("x.com")
@@ -336,7 +349,14 @@ def _youtube_video_id(url: str) -> str | None:
     if match:
         return match.group(1)
     match = re.search(r"/(?:shorts|live)/([A-Za-z0-9_-]{6,})", parts.path)
-    return match.group(1) if match else None
+    if match:
+        value = match.group(1)
+        # /live/UC... is commonly a channel-live URL, not a video URL.
+        # Only normalize a /live path to watch?v= when it looks like the
+        # standard 11-character YouTube video ID.
+        if len(value) == 11:
+            return value
+    return None
 
 
 def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
