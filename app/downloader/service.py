@@ -3355,8 +3355,9 @@ def _download_direct_video(
     headers: dict[str, str] | None = None,
     platform: str = "Media",
     cancel_event: threading.Event | None = None,
+    timeout: float = 60,
 ) -> Path:
-    """Stream an already-resolved progressive Meta CDN video URL directly."""
+    """Stream an already-resolved progressive media URL directly."""
     safe_platform = "".join(ch if ch.isalnum() else "-" for ch in platform).strip("-") or "Media"
     target = Path(output_dir) / f"{safe_platform}-{media_id}.mp4"
     part = target.with_suffix(".mp4.part")
@@ -3371,7 +3372,7 @@ def _download_direct_video(
     downloaded = 0
     started = time.monotonic()
     try:
-        with urllib.request.urlopen(request, timeout=60) as response, open(part, "wb") as fh:
+        with urllib.request.urlopen(request, timeout=max(5.0, float(timeout))) as response, open(part, "wb") as fh:
             content_type = (response.headers.get("Content-Type") or "").lower()
             if content_type.startswith(("text/html", "text/plain", "application/json")):
                 raise DownloadError(
@@ -3408,87 +3409,123 @@ def _download_direct_video(
         raise
 
 
-def _prepare_telegram_video(path: Path) -> Path:
-    """Validate and normalize an API video for Telegram playback.
+def _prepare_telegram_video(
+    path: Path,
+    cancel_event: threading.Event | None = None,
+    notify: Callable[[float, str], None] | None = None,
+) -> Path:
+    """Validate an API file and remux it without re-encoding.
 
-    The external API can return a perfectly downloadable MP4 whose container
-    metadata is not optimized for Telegram playback, or a codec that some
-    Telegram clients cannot decode. Probe first, then prefer a lossless
-    stream-copy/faststart pass; only transcode when the codec requires it.
+    Re-encoding AV1/4K/8K on Koyeb was the main regression: FFmpeg could run
+    for 300 seconds and still never produce a Telegram file. The API remains
+    first priority; this function only makes its already-downloaded MP4
+    container seekable/fast-start and verifies duration before sending.
     """
+    if cancel_event is not None and cancel_event.is_set():
+        raise DownloadCancelled("YouTube API media preparation cancelled.")
+
     probe = subprocess.run(
         [
             "ffprobe", "-v", "error",
-            "-show_entries", "stream=codec_type,codec_name",
+            "-show_entries", "format=duration:stream=codec_type,codec_name,width,height,duration",
             "-of", "json", str(path),
         ],
-        capture_output=True,
-        text=True,
-        timeout=20,
+        capture_output=True, text=True, timeout=20,
     )
     if probe.returncode != 0:
         raise DownloadError("YouTube API returned an invalid media file.")
     try:
-        streams = json.loads(probe.stdout or "{}").get("streams") or []
+        payload = json.loads(probe.stdout or "{}")
+        streams = payload.get("streams") or []
     except json.JSONDecodeError as exc:
         raise DownloadError("YouTube API returned unreadable media metadata.") from exc
 
-    video_codecs = [
-        str(item.get("codec_name") or "").lower()
-        for item in streams
-        if item.get("codec_type") == "video"
-    ]
-    audio_codecs = [
-        str(item.get("codec_name") or "").lower()
-        for item in streams
-        if item.get("codec_type") == "audio"
-    ]
-    if not video_codecs:
+    videos = [x for x in streams if isinstance(x, dict) and x.get("codec_type") == "video"]
+    audios = [x for x in streams if isinstance(x, dict) and x.get("codec_type") == "audio"]
+    if not videos:
         raise DownloadError("YouTube API response did not contain a video stream.")
-
-    video_codec = video_codecs[0]
-    audio_codec = audio_codecs[0] if audio_codecs else "none"
+    video = videos[0]
+    video_codec = str(video.get("codec_name") or "unknown").lower()
+    audio_codec = str(audios[0].get("codec_name") or "none").lower() if audios else "none"
+    duration_value = video.get("duration") or (payload.get("format") or {}).get("duration") or 0
+    try:
+        duration = float(duration_value or 0)
+    except (TypeError, ValueError):
+        duration = 0.0
     logger.info(
-        "YouTube API media probe video_codec=%s audio_codec=%s path=%s",
-        video_codec, audio_codec, path.name,
+        "YouTube API media probe video_codec=%s audio_codec=%s size=%d duration=%.2fs resolution=%sx%s path=%s",
+        video_codec, audio_codec, path.stat().st_size if path.exists() else 0,
+        duration, int(video.get("width") or 0), int(video.get("height") or 0), path.name,
     )
+    if duration <= 0:
+        raise DownloadError("YouTube API returned a media file with no valid duration.")
 
     output = path.with_name(f"{path.stem}-telegram.mp4")
-    if video_codec in {"h264", "avc1"} and audio_codec in {"aac", "mp4a"}:
-        command = [
+    if notify:
+        notify(99, "preparing Telegram MP4…")
+    process = subprocess.Popen(
+        [
             "ffmpeg", "-y", "-i", str(path),
             "-map", "0:v:0", "-map", "0:a:0?",
             "-c", "copy", "-movflags", "+faststart", str(output),
-        ]
-    else:
-        # Telegram playback compatibility fallback. Keep the API as the source;
-        # yt-dlp is not used here. Re-encode only when stream codecs require it.
-        command = [
-            "ffmpeg", "-y", "-i", str(path),
-            "-map", "0:v:0", "-map", "0:a:0?",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
-            "-movflags", "+faststart", str(output),
-        ]
-
-    process = subprocess.run(
-        command,
+        ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
-        timeout=300,
     )
-    if process.returncode != 0 or not output.is_file() or output.stat().st_size <= 0:
-        logger.warning(
-            "YouTube API Telegram normalization failed returncode=%s error=%s",
-            process.returncode, (process.stderr or "")[-1200:],
-        )
-        raise DownloadError("YouTube API media could not be prepared for Telegram playback.")
     try:
-        path.unlink(missing_ok=True)
-    except OSError:
-        pass
+        while process.poll() is None:
+            if cancel_event is not None and cancel_event.is_set():
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=3)
+                output.unlink(missing_ok=True)
+                raise DownloadCancelled("YouTube API media preparation cancelled.")
+            time.sleep(0.25)
+        stderr = process.stderr.read() if process.stderr else ""
+        if process.returncode != 0 or not output.is_file() or output.stat().st_size <= 0:
+            logger.warning(
+                "YouTube API Telegram remux failed returncode=%s error=%s",
+                process.returncode, (stderr or "")[-1200:],
+            )
+            raise DownloadError(
+                "YouTube API media could not be prepared as a Telegram-compatible MP4."
+            )
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=3)
+        if process.stderr:
+            process.stderr.close()
+
+    verify = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_type",
+         "-of", "json", str(output)],
+        capture_output=True, text=True, timeout=20,
+    )
+    if verify.returncode != 0:
+        output.unlink(missing_ok=True)
+        raise DownloadError("YouTube API produced an unreadable Telegram MP4.")
+    try:
+        verify_payload = json.loads(verify.stdout or "{}")
+        verify_streams = verify_payload.get("streams") or []
+        verify_duration = float((verify_payload.get("format") or {}).get("duration") or 0)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        output.unlink(missing_ok=True)
+        raise DownloadError("YouTube API produced invalid Telegram media metadata.")
+    if verify_duration <= 0 or not any(
+        isinstance(x, dict) and x.get("codec_type") == "video" for x in verify_streams
+    ):
+        output.unlink(missing_ok=True)
+        raise DownloadError("YouTube API produced a zero-duration Telegram video.")
+
+    path.unlink(missing_ok=True)
     output.replace(path)
+    if notify:
+        notify(100, "ready")
     return path
 
 
@@ -3717,8 +3754,13 @@ def _download_sync(
                                 selected.get("http_headers") if isinstance(selected.get("http_headers"), dict) else None,
                                 platform="YouTube API",
                                 cancel_event=cancel_event,
+                                timeout=12,
                             )
-                            return _prepare_telegram_video(api_path)
+                            return _prepare_telegram_video(
+                                api_path,
+                                cancel_event=cancel_event,
+                                notify=notify,
+                            )
                         except DownloadCancelled:
                             raise
                         except Exception as exc:
