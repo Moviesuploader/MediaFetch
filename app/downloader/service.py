@@ -471,10 +471,32 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
                             priority = 70
                         else:
                             priority = 20
+                        codec_video = None
+                        codec_audio = None
+                        for codec_key in ("vcodec", "video_codec", "videoCodec", "codec", "videoCodecName"):
+                            candidate_codec = node.get(codec_key)
+                            if isinstance(candidate_codec, str) and candidate_codec.strip():
+                                codec_video = candidate_codec.strip().lower()
+                                break
+                        for codec_key in ("acodec", "audio_codec", "audioCodec", "audioCodecName"):
+                            candidate_codec = node.get(codec_key)
+                            if isinstance(candidate_codec, str) and candidate_codec.strip():
+                                codec_audio = candidate_codec.strip().lower()
+                                break
+                        mime = str(
+                            node.get("mimeType")
+                            or node.get("mime")
+                            or node.get("type")
+                            or ""
+                        ).lower()
+                        if codec_video is None and "video/" in mime:
+                            codec_video = "unknown"
                         found.append({
                             "url": value,
                             "height": local_height or 0,
                             "priority": priority,
+                            "vcodec": codec_video or "unknown",
+                            "acodec": codec_audio or "unknown",
                         })
                 elif isinstance(value, (dict, list)):
                     walk(value, local_height)
@@ -523,8 +545,8 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
                     "format_id": f"desi-api-{item['height'] or index}",
                     "url": value,
                     "ext": ext,
-                    "vcodec": "h264",
-                    "acodec": "aac",
+                    "vcodec": item.get("vcodec") or "unknown",
+                    "acodec": item.get("acodec") or "unknown",
                     "height": item["height"],
                     "protocol": urlsplit(value).scheme,
                     "preference": int(item.get("priority") or 0),
