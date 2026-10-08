@@ -365,7 +365,7 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
     seen: set[str] = set()
     metadata: dict[str, object] = {}
 
-    def is_direct_video(value: str, key: str) -> bool:
+    def is_direct_video(value: str, key: str, height: int | None = None) -> bool:
         try:
             parts = urlsplit(value)
             host = parts.netloc.lower().split(":")[0]
@@ -375,8 +375,21 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
                 return False
             path = parts.path.lower()
             query_text = parts.query.lower()
+            normalized_key = re.sub(r"[^a-z0-9]", "", key.lower())
+            generic_media_key = normalized_key in {
+                "url", "link", "src", "stream", "media", "video",
+                "videourl", "streamurl", "download", "downloadurl",
+            }
+            quality_key = bool(
+                re.search(
+                    r"(?:^|[^0-9])(?:144|240|360|480|720|1080|1440|2160)(?:p)?(?:$|[^0-9])",
+                    key.lower(),
+                )
+            )
             return (
                 key in direct_keys
+                or (generic_media_key and (height is not None or quality_key))
+                or quality_key
                 or "googlevideo.com" in host
                 or path.endswith((".mp4", ".m4v", ".webm"))
                 or "mime=video" in query_text
@@ -416,7 +429,7 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
 
             for key, value in node.items():
                 if isinstance(value, str) and value.startswith(("http://", "https://")):
-                    if is_direct_video(value, str(key)) and value not in seen:
+                    if is_direct_video(value, str(key), local_height) and value not in seen:
                         seen.add(value)
                         found.append({"url": value, "height": local_height or 0})
                 elif isinstance(value, (dict, list)):
@@ -442,7 +455,7 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
             )
             with urllib.request.urlopen(
                 request,
-                timeout=max(1, min(settings.youtube_api_timeout_seconds, 12)),
+                timeout=max(1, min(settings.youtube_api_timeout_seconds, 15)),
             ) as response:
                 if getattr(response, "status", 200) >= 400:
                     continue
