@@ -5,6 +5,7 @@ from app.downloader.detector import detect_platform
 from app.downloader.service import (
     _entry_video_format,
     _youtube_api_height,
+    _youtube_video_id,
     _facebook_video_page_fallback,
     _extract_profiles,
     _platform_from_url,
@@ -31,6 +32,20 @@ class DownloaderRoutingTests(unittest.TestCase):
         variants = _url_variants(url)
         self.assertEqual(variants[0], url)
         self.assertTrue(any("m.facebook.com" in item for item in variants))
+
+    def test_youtube_channel_live_url_is_not_video_id(self):
+        url = "https://www.youtube.com/live/UCcYP83kTmE?si=test"
+        self.assertIsNone(_youtube_video_id(url))
+        variants = _url_variants(url)
+        self.assertEqual(variants[0], url)
+        self.assertIn(
+            "https://www.youtube.com/channel/UCcYP83kTmE/live",
+            variants,
+        )
+
+    def test_youtube_video_live_url_keeps_video_id_normalization(self):
+        url = "https://www.youtube.com/live/dQw4w9WgXcQ?si=test"
+        self.assertEqual(_youtube_video_id(url), "dQw4w9WgXcQ")
 
     def test_social_profiles_have_generic_fallback(self):
         profiles = _extract_profiles("https://www.facebook.com/reel/123")
