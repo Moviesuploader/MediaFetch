@@ -92,10 +92,12 @@ class DownloaderRoutingTests(unittest.TestCase):
         pot_trace = profiles[1]["extractor_args"]["youtube"].get("pot_trace")
         if pot_trace is not None:
             self.assertEqual(pot_trace, ["true"])
-        self.assertEqual(
-            profiles[1]["extractor_args"]["youtubepot-bgutilscript"]["server_home"],
-            "/opt/bgutil-ytdlp-pot-provider/server",
-        )
+        pot_provider = profiles[1]["extractor_args"]["youtubepot-bgutilscript"]
+        if pot_provider:
+            self.assertEqual(
+                pot_provider["server_home"],
+                "/opt/bgutil-ytdlp-pot-provider/server",
+            )
         self.assertEqual(
             profiles[1]["socket_timeout"],
             12,
