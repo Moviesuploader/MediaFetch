@@ -1246,6 +1246,10 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         # user's peer. Telegram's copyMessage is server-side,
                         # so the large file does not need to be re-uploaded.
                         if large_dump_channel:
+                            # MTProto has already uploaded the large file into
+                            # the bridge channel. The Bot API can copy that
+                            # server-side message to the user's PM without
+                            # re-uploading the file.
                             for bridge_message in sent_large:
                                 copied = await context.bot.copy_message(
                                     chat_id=query.message.chat_id,
@@ -1263,13 +1267,17 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                                     file_ids.append(copied.video.file_id)
                                 elif copied.photo:
                                     file_ids.append(copied.photo[-1].file_id)
-                        else:
-                            # No bridge configured: MTProto attempted direct
-                            # delivery above, preserving the legacy behavior.
-                            logger.info(
-                                "Large file delivered directly by MTProto user session user=%s",
-                                user_id,
-                            )
+                            # Do not run _send_media_message() below: that
+                            # would upload the same >50 MB file a second time.
+                            continue
+
+                        # No bridge channel configured: MTProto delivered the
+                        # file directly to the target chat.
+                        logger.info(
+                            "Large file delivered directly by MTProto user session user=%s",
+                            user_id,
+                        )
+                        continue
 
                     sent = await _send_media_message(
                         query.message,
