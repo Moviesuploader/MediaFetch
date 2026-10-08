@@ -1222,6 +1222,11 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                             except Exception:
                                 pass
 
+                        large_dump_channel = (
+                            storage.channel_config().get("dump")
+                            or settings.dump_channel_id
+                            or None
+                        )
                         try:
                             sent_large = await mtproto_uploader.send_file(
                                 item,
@@ -1229,18 +1234,42 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                                 caption=caption,
                                 progress_callback=mt_progress,
                                 reply_to_message_id=query.message.message_id,
-                                dump_channel_id=(
-                                    storage.channel_config().get("dump")
-                                    or settings.dump_channel_id
-                                    or None
-                                ),
+                                dump_channel_id=large_dump_channel,
                             )
                         except LargeUploadError as exc:
                             raise DownloadError(f"Large Telegram upload failed: {exc}") from exc
-                        # MTProto already copied the uploaded media to the
-                        # configured dump channel, so do not pass its Message
-                        # objects through the Bot API dump helper.
-                        continue
+
+                        # MTProto uploads the large file to the bridge/dump
+                        # channel. The Bot API then copies it from there into
+                        # the user's PM. This avoids PEER_ID_INVALID when the
+                        # MTProto user session has never met the requesting
+                        # user's peer. Telegram's copyMessage is server-side,
+                        # so the large file does not need to be re-uploaded.
+                        if large_dump_channel:
+                            for bridge_message in sent_large:
+                                copied = await context.bot.copy_message(
+                                    chat_id=query.message.chat_id,
+                                    from_chat_id=large_dump_channel,
+                                    message_id=bridge_message.id,
+                                    reply_to_message_id=(
+                                        query.message.message_id
+                                        if not file_ids
+                                        else None
+                                    ),
+                                )
+                                if copied.document:
+                                    file_ids.append(copied.document.file_id)
+                                elif copied.video:
+                                    file_ids.append(copied.video.file_id)
+                                elif copied.photo:
+                                    file_ids.append(copied.photo[-1].file_id)
+                        else:
+                            # No bridge configured: MTProto attempted direct
+                            # delivery above, preserving the legacy behavior.
+                            logger.info(
+                                "Large file delivered directly by MTProto user session user=%s",
+                                user_id,
+                            )
 
                     sent = await _send_media_message(
                         query.message,
