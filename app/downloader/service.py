@@ -318,10 +318,11 @@ def _youtube_api_height(value: object) -> int | None:
         return int(value)
     if not isinstance(value, str):
         return None
-    match = re.search(r"(?<!\d)(\d{3,4})(?:p|$)", value.lower())
-    if match:
-        return int(match.group(1))
-    match = re.search(r"(?<!\d)(\d{3,4})(?:\s*[x×]\s*\d{3,4})?", value.lower())
+    normalized = value.lower().strip()
+    dimension = re.match(r"(\d{3,4})\s*[x×]\s*\d{3,4}", normalized)
+    if dimension:
+        return int(dimension.group(1))
+    match = re.search(r"(?<!\d)(\d{3,4})(?:p|$)", normalized)
     return int(match.group(1)) if match else None
 
 
