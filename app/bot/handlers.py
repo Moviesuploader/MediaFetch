@@ -817,9 +817,13 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     async with _ACTIVE_LOCK:
-        if user_id in _ACTIVE_USERS:
+        # _ACTIVE_JOBS is the single source of truth for running downloads.
+        # Do not use a separate _ACTIVE_USERS set here; that caused a runtime
+        # NameError and prevented every new URL from reaching inspection.
+        if any(job_user_id == user_id for job_user_id, _request_id in _ACTIVE_JOBS):
             await update.message.reply_text(
-                "⏳ You already have a download running. Please wait for it to finish."
+                "⏳ You already have a download running. Please cancel it with ❌ "
+                "or wait for it to finish before starting another task."
             )
             return
 
@@ -1044,6 +1048,9 @@ async def _download_choice_worker(update: Update, context: ContextTypes.DEFAULT_
         "best": "Best quality",
         "2160p": "2160p",
         "1440p": "1440p",
+        "4320p": "4320p",
+        "2160p": "2160p",
+        "1440p": "1440p",
         "1080p": "1080p",
         "720p": "720p",
         "480p": "480p",
@@ -1224,9 +1231,13 @@ async def _download_choice_worker(update: Update, context: ContextTypes.DEFAULT_
             index = 0
             while upload_running:
                 try:
+                    if cancel_event.is_set():
+                        return
                     await status.edit_text(
                         f"📤 <b>Uploading to Telegram…</b>\n"
-                        f"<code>[{frames[index % len(frames)]}]</code>",
+                        f"<code>[{frames[index % len(frames)]}]</code>\n"
+                        "⚡ Upload in progress…",
+                        reply_markup=_cancel_keyboard(request_id),
                         parse_mode="HTML",
                     )
                 except Exception:
