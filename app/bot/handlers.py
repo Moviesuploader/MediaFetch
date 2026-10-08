@@ -962,6 +962,15 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             task, cancel_event = job
             cancel_event.set()
             task.cancel()
+            # Wait briefly for the worker's finally block to release the
+            # active-job slot. This lets the user start a new task immediately
+            # after pressing ❌ instead of racing the cleanup.
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            except Exception:
+                logger.exception("Cancelled media task cleanup failed")
             try:
                 await query.edit_message_text("❌ <b>Task cancelled.</b>", parse_mode="HTML")
             except Exception:
