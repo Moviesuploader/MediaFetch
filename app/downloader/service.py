@@ -3507,6 +3507,7 @@ def _download_structured_media(
     notify: Callable[[float, str], None],
     platform: str,
     mode: str = "best",
+    cancel_event: threading.Event | None = None,
 ) -> list[Path]:
     """Download structured Meta media in original carousel order.
 
@@ -3532,6 +3533,8 @@ def _download_structured_media(
                 video_headers = selected_format.get("http_headers") or video_headers
 
         if isinstance(direct_video, str) and direct_video:
+            if cancel_event is not None and cancel_event.is_set():
+                raise DownloadCancelled("Media download cancelled.")
             path = _download_direct_video(
                 direct_video,
                 output_dir,
@@ -3543,6 +3546,7 @@ def _download_structured_media(
                 ),
                 video_headers,
                 platform=platform,
+                cancel_event=cancel_event,
             )
             paths.append(path)
             continue
@@ -3753,6 +3757,7 @@ def _download_sync(
                 if isinstance(info.get("_mediafetch_direct_headers"), dict)
                 else None,
                 platform=platform,
+                cancel_event=cancel_event,
             )
 
         if mode != "audio" and info.get("entries"):
@@ -3779,6 +3784,7 @@ def _download_sync(
                     notify,
                     platform,
                     mode,
+                    cancel_event=cancel_event,
                 )
 
         if mode == "photo" or (mode != "audio" and not _has_video_format(info)):
