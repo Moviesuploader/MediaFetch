@@ -489,7 +489,7 @@ def _quality_keyboard(info: MediaInfo, request_id: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton("🎵 MP3", callback_data=f"mf:{request_id}:audio"),
         ]]
         max_height = max(info.heights, default=0)
-        standards = [2160, 1440, 1080, 720, 480, 360]
+        # Show every quality actually returned by the extractor/API, including\n        # 8K/4320p and the low 240p/144p fallbacks.\n        standards = [4320, 2160, 1440, 1080, 720, 480, 360, 240, 144]
         available = [height for height in standards if height <= max_height]
         for index in range(0, len(available), 2):
             rows.append([
