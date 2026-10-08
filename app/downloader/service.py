@@ -9,6 +9,7 @@ import mimetypes
 import time
 import logging
 import subprocess
+import threading
 import urllib.request
 import urllib.error
 import http.cookiejar
@@ -32,6 +33,10 @@ logger = logging.getLogger("mediafetch.downloader")
 
 class DownloadError(Exception):
     """Raised when media extraction or download fails."""
+
+
+class DownloadCancelled(DownloadError):
+    """Raised when the user cancels an in-flight media operation."""
 
 
 ProgressCallback = Callable[[float, str], Awaitable[None]]
@@ -3319,13 +3324,16 @@ def _download_direct_video(
     notify: Callable[[float, str], None],
     headers: dict[str, str] | None = None,
     platform: str = "Media",
+    cancel_event: threading.Event | None = None,
 ) -> Path:
     """Stream an already-resolved progressive Meta CDN video URL directly."""
     safe_platform = "".join(ch if ch.isalnum() else "-" for ch in platform).strip("-") or "Media"
     target = Path(output_dir) / f"{safe_platform}-{media_id}.mp4"
     part = target.with_suffix(".mp4.part")
     request_headers = {
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/146.0.0.0 Safari/537.36",
+        "Accept": "video/mp4,video/webm,video/*;q=0.9,application/octet-stream;q=0.8,*/*;q=0.5",
+        "Referer": "https://www.youtube.com/",
         **(headers or {}),
     }
     request = urllib.request.Request(media_url, headers=request_headers)
@@ -3334,10 +3342,17 @@ def _download_direct_video(
     started = time.monotonic()
     try:
         with urllib.request.urlopen(request, timeout=60) as response, open(part, "wb") as fh:
+            content_type = (response.headers.get("Content-Type") or "").lower()
+            if content_type.startswith(("text/html", "text/plain", "application/json")):
+                raise DownloadError(
+                    f"{platform} returned non-media content-type={content_type or 'unknown'}"
+                )
             total = int(response.headers.get("Content-Length") or 0)
             if limit and total and total > limit:
                 raise DownloadError(f"Video exceeds the {max_file_mb} MB plan limit.")
             while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise DownloadCancelled(f"{platform} download cancelled.")
                 chunk = response.read(256 * 1024)
                 if not chunk:
                     break
@@ -3350,6 +3365,8 @@ def _download_direct_video(
                 notify(percent, f"{percent:.0f}% • {downloaded / elapsed / (1024 * 1024):.1f} MB/s")
         if downloaded <= 0:
             raise DownloadError(f"{platform} returned an empty video.")
+        if cancel_event is not None and cancel_event.is_set():
+            raise DownloadCancelled(f"{platform} download cancelled.")
         part.replace(target)
         notify(100, "ready")
         return target
