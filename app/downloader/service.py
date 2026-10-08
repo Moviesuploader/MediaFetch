@@ -2992,9 +2992,22 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
     # server-rendered payload strategy; this avoids wasting time on yt-dlp's
     # generic extractor/login-wall path.
     if _platform_from_url(url) == "threads":
+        # The server-rendered data-sjs payload is fastest, but Threads can
+        # omit the exact post node depending on the request surface. Keep the
+        # existing resolver first, then use the stronger GraphQL/browser/auth
+        # fallbacks that are already implemented below.
         threads_media = _threads_crawler_fallback(url)
         if threads_media:
             return threads_media
+        for resolver in (
+            _threads_graphql_fallback,
+            _threads_authenticated_fallback,
+            _threads_browser_video_fallback,
+            _threads_api_fallback,
+        ):
+            threads_media = resolver(url)
+            if threads_media:
+                return threads_media
 
     # Photo/carousel posts need child-specific media metadata. Do this before
     # yt-dlp/OpenGraph: OpenGraph exposes only the cover image and can make a
@@ -3069,12 +3082,24 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
                 logger.info("Facebook public video fallback succeeded url=%s", candidate)
                 return fallback
 
-            photo_fallback = _facebook_curl_photo_fallback(candidate)
-            if photo_fallback:
-                logger.info("Facebook browser photo fallback succeeded url=%s", candidate)
-                return photo_fallback
+            # A /share/v/, /share/r/, /reel/ or /videos/ URL is video
+            # intent. Never let a video preview thumbnail become a fake photo
+            # result when the video resolver fails.
+            candidate_path = urlsplit(candidate).path.lower()
+            video_intent = any(
+                marker in candidate_path
+                for marker in ("/share/v/", "/share/r/", "/reel/", "/videos/")
+            )
+            if not video_intent:
+                photo_fallback = _facebook_curl_photo_fallback(candidate)
+                if photo_fallback:
+                    logger.info("Facebook browser photo fallback succeeded url=%s", candidate)
+                    return photo_fallback
 
-            authenticated_photo = _facebook_authenticated_photo_fallback(candidate)
+                authenticated_photo = _facebook_authenticated_photo_fallback(candidate)
+                if authenticated_photo:
+                    logger.info("Facebook authenticated photo fallback succeeded url=%s", candidate)
+                    return authenticated_photo
             if authenticated_photo:
                 logger.info("Facebook authenticated photo fallback succeeded url=%s", candidate)
                 return authenticated_photo
