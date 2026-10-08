@@ -402,27 +402,33 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
             path = parts.path.lower()
             query_text = parts.query.lower()
             normalized_key = re.sub(r"[^a-z0-9]", "", key.lower())
-            generic_media_key = normalized_key in {
-                "url", "link", "src", "stream", "media", "video",
-                "videourl", "streamurl", "download", "downloadurl",
-            }
             quality_key = bool(
                 re.search(
                     r"(?:^|[^0-9])(?:144|240|360|480|720|1080|1440|2160)(?:p)?(?:$|[^0-9])",
                     key.lower(),
                 )
             )
+            explicit_key = normalized_key in {
+                re.sub(r"[^a-z0-9]", "", item.lower()) for item in direct_keys
+            }
+            # Generic JSON fields ("url", "link", "src", etc.) are not
+            # sufficient evidence of a final media URL. The previous parser
+            # promoted API resolver/metadata endpoints and only rejected them
+            # after starting a download.
+            generic_media_key = normalized_key in {
+                "url", "link", "src", "stream", "media", "video",
+                "videourl", "streamurl", "download", "downloadurl",
+            }
             return (
-                key in direct_keys
-                or (generic_media_key and (height is not None or quality_key))
-                or quality_key
+                explicit_key
                 or "googlevideo.com" in host
                 or path.endswith((".mp4", ".m4v", ".webm"))
                 or "mime=video" in query_text
+                or quality_key
+                or (generic_media_key and height is not None and "video" in query_text)
             )
         except Exception:
             return False
-
     def walk(node: object, inherited_height: int | None = None) -> None:
         if isinstance(node, dict):
             local_height = inherited_height
@@ -3403,6 +3409,32 @@ def _download_direct_video(
             total = int(response.headers.get("Content-Length") or 0)
             if limit and total and total > limit:
                 raise DownloadError(f"Video exceeds the {max_file_mb} MB plan limit.")
+
+            # Some resolver endpoints incorrectly advertise JSON as
+            # octet-stream. Reject obvious JSON/HTML before writing a large file.
+            first_chunk = response.read(16 * 1024)
+            if not first_chunk:
+                raise DownloadError(f"{platform} returned an empty video.")
+            if first_chunk.lstrip().startswith((b"{", b"[", b"<")):
+                raise DownloadError(f"{platform} returned non-media response body.")
+            known_media_magic = (
+                b"ftyp" in first_chunk[:64]
+                or first_chunk.startswith(b"\x1a\x45\xdf\xa3")
+                or first_chunk.startswith(b"RIFF")
+                or first_chunk.startswith(b"ID3")
+            )
+            if not content_type.startswith(("video/", "audio/")) and not known_media_magic:
+                raise DownloadError(
+                    f"{platform} returned an unrecognized media response "
+                    f"content-type={content_type or 'unknown'}"
+                )
+
+            fh.write(first_chunk)
+            downloaded += len(first_chunk)
+            elapsed = max(time.monotonic() - started, 0.001)
+            percent = (downloaded / total * 100) if total else 0
+            notify(percent, f"{percent:.0f}% • {downloaded / elapsed / (1024 * 1024):.1f} MB/s")
+
             while True:
                 if cancel_event is not None and cancel_event.is_set():
                     raise DownloadCancelled(f"{platform} download cancelled.")
