@@ -7,6 +7,7 @@ import io
 import logging
 import re
 import secrets
+import threading
 from pathlib import Path
 from urllib.parse import quote_plus
 
@@ -27,7 +28,7 @@ from app.downloader.detector import detect_platform
 from app.downloader.service import DownloadError, MediaInfo, download_media, get_media_info
 
 URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
-_ACTIVE_USERS: set[int] = set()
+_ACTIVE_JOBS: dict[tuple[int, str], tuple[asyncio.Task, threading.Event]] = {}
 _ACTIVE_LOCK = asyncio.Lock()
 _PENDING_REQUESTS: dict[int, tuple[str, str, str, MediaInfo | None, str | None, object | None]] = {}
 _PENDING_PAYMENT_PLAN: dict[int, str] = {}
@@ -480,6 +481,12 @@ async def _send_media_album(
     return sent
 
 
+def _cancel_keyboard(request_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Cancel", callback_data=f"mf:{request_id}:cancel")]
+    ])
+
+
 def _quality_keyboard(info: MediaInfo, request_id: str) -> InlineKeyboardMarkup:
     if info.is_photo:
         rows = [[InlineKeyboardButton("📸 HD / Original", callback_data=f"mf:{request_id}:photo")]]
@@ -488,11 +495,14 @@ def _quality_keyboard(info: MediaInfo, request_id: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton("🎬 Best", callback_data=f"mf:{request_id}:best"),
             InlineKeyboardButton("🎵 MP3", callback_data=f"mf:{request_id}:audio"),
         ]]
-        max_height = max(info.heights, default=0)
-        # Show every quality actually returned by the extractor/API, including
-        # 8K/4320p and the low 240p/144p fallbacks.
-        standards = [4320, 2160, 1440, 1080, 720, 480, 360, 240, 144]
-        available = [height for height in standards if height <= max_height]
+        # Use the exact heights returned by the extractor/API. Do not synthesize
+        # missing qualities (e.g. showing 720p when the API returned 1080/480
+        # only). This keeps the buttons truthful and prevents avoidable
+        # "format not available" downloads.
+        available = sorted(
+            {int(height) for height in info.heights if int(height) > 0},
+            reverse=True,
+        )
         for index in range(0, len(available), 2):
             rows.append([
                 InlineKeyboardButton(
@@ -931,7 +941,55 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not query or not query.message:
         return
 
+    parts = query.data.split(":") if query.data else []
+    if len(parts) != 3 or parts[0] != "mf":
+        await query.answer()
+        await query.edit_message_text("⌛ This request is invalid. Please send the URL again.")
+        return
+
+    request_id, mode = parts[1], parts[2]
+    user_id = update.effective_user.id if update.effective_user else query.message.chat_id
+
+    if mode == "cancel":
+        await query.answer("Cancelling…")
+        async with _ACTIVE_LOCK:
+            job = _ACTIVE_JOBS.get((user_id, request_id))
+        if job:
+            task, cancel_event = job
+            cancel_event.set()
+            task.cancel()
+            try:
+                await query.edit_message_text("❌ <b>Task cancelled.</b>", parse_mode="HTML")
+            except Exception:
+                pass
+            return
+
+        async with _PENDING_LOCK:
+            pending = _PENDING_REQUESTS.get(user_id)
+            if pending and pending[0] == request_id:
+                _PENDING_REQUESTS.pop(user_id, None)
+                pending = True
+            else:
+                pending = False
+        await query.edit_message_text(
+            "❌ <b>Download cancelled.</b>" if pending else "⌛ This task is already finished.",
+            parse_mode="HTML",
+        )
+        return
+
     await query.answer()
+    context.application.create_task(
+        _download_choice_worker(update, context),
+        update=update,
+        name=f"mediafetch-download-{user_id}-{request_id}",
+    )
+
+
+async def _download_choice_worker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not query.message:
+        return
+
     parts = query.data.split(":") if query.data else []
     if len(parts) != 3 or parts[0] != "mf":
         await query.edit_message_text("⌛ This request is invalid. Please send the URL again.")
@@ -974,13 +1032,13 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
+    cancel_event = threading.Event()
+    current_task = asyncio.current_task()
+    if current_task is None:
+        await query.edit_message_text("❌ Unable to start the download task.")
+        return
     async with _ACTIVE_LOCK:
-        if user_id in _ACTIVE_USERS:
-            await query.edit_message_text(
-                "⏳ You already have a download running. Please wait for it to finish."
-            )
-            return
-        _ACTIVE_USERS.add(user_id)
+        _ACTIVE_JOBS[(user_id, request_id)] = (current_task, cancel_event)
 
     labels = {
         "best": "Best quality",
@@ -1053,6 +1111,7 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             f"🔎 <b>Platform:</b> {platform}\n"
             f"🎯 <b>Mode:</b> {label}\n"
             f"⏬ <b>Progress:</b> starting…",
+            reply_markup=_cancel_keyboard(request_id),
             parse_mode="HTML",
         )
         await query.message.chat.send_action(ChatAction.UPLOAD_DOCUMENT)
@@ -1085,7 +1144,11 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             last_text = text
             last_progress_edit = now
             try:
-                await status.edit_text(text, parse_mode="HTML")
+                await status.edit_text(
+                    text,
+                    reply_markup=_cancel_keyboard(request_id),
+                    parse_mode="HTML",
+                )
             except Exception:
                 pass
 
@@ -1095,6 +1158,7 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 f"🔎 <b>Platform:</b> {platform}\n"
                 f"🎯 <b>Mode:</b> {label}\n"
                 "⏬ <b>Progress:</b> downloading…",
+                reply_markup=_cancel_keyboard(request_id),
                 parse_mode="HTML",
             )
             path = await download_media(
@@ -1103,6 +1167,7 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 mode=mode,
                 max_file_mb=max_file_mb,
                 progress_callback=progress,
+                cancel_event=cancel_event,
             )
         finally:
             await _DOWNLOAD_LIMITER.release()
@@ -1220,7 +1285,11 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                             last_text = text
                             last_progress_edit = now
                             try:
-                                await status.edit_text(text, parse_mode="HTML")
+                                await status.edit_text(
+                                    text,
+                                    reply_markup=_cancel_keyboard(request_id),
+                                    parse_mode="HTML",
+                                )
                             except Exception:
                                 pass
 
@@ -1321,6 +1390,17 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             f"✅ Downloaded • {mode} • {size_bytes / (1024 * 1024):.1f} MB"
         )
         await status.delete()
+    except asyncio.CancelledError:
+        logger.info("Media task cancelled user=%s platform=%s mode=%s request_id=%s", user_id, platform, mode, request_id)
+        await _update_link_log(
+            context, link_log_message, user_id, username, platform, url, "❌ Cancelled"
+        )
+        if status:
+            try:
+                await status.edit_text("❌ <b>Download/upload cancelled.</b>", parse_mode="HTML")
+            except Exception:
+                pass
+        raise
     except DownloadError as exc:
         logger.warning("Download failed user=%s platform=%s mode=%s error=%s", user_id, platform, mode, exc)
         await asyncio.to_thread(storage.record_event, user_id, platform, False, 0, cache_hit)
@@ -1350,4 +1430,4 @@ async def download_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 except OSError:
                     pass
         async with _ACTIVE_LOCK:
-            _ACTIVE_USERS.discard(user_id)
+            _ACTIVE_JOBS.pop((user_id, request_id), None)
