@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     youtube_pot_provider_mode: str = "script"
     youtube_pot_provider_url: str = "http://127.0.0.1:4416"
     youtube_pot_provider_home: str = "/opt/bgutil-ytdlp-pot-provider/server"
+    # Optional external YouTube direct-stream fallback (Desi API).
+    youtube_api_enabled: bool = True
+    youtube_api_url: str = "https://samra-youtube-api.krishnalucky193.workers.dev"
+    youtube_api_timeout_seconds: int = 6
 
     # Operational Telegram channels. Accept numeric chat IDs or @usernames.
     dump_channel_id: str = ""
