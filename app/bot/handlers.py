@@ -1029,6 +1029,31 @@ async def _handle_payment_utr(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception:
             logger.warning("Payment admin notification failed user=%s", user_id)
 
+    # Optional configured group gets actionable approval buttons. Only OWNER_ID
+    # can use them; the same payment remains available in the private owner panel.
+    approval_chat_id = str(getattr(settings, "payment_approval_chat_id", "") or "").strip()
+    if approval_chat_id:
+        try:
+            await context.bot.send_message(
+                chat_id=int(approval_chat_id),
+                text=(
+                    f"🟡 <b>Premium payment approval required</b>\n\n"
+                    f"🧾 ID: <code>{doc['payment_id']}</code>\n"
+                    f"👤 User: <code>{user_id}</code>\n"
+                    f"📦 Plan: <b>{PLAN_LABELS[plan]}</b>\n"
+                    f"💰 Amount: <b>{doc['amount']} {doc['currency']}</b>\n"
+                    f"🔢 UTR: <code>{html.escape(utr)}</code>\n\n"
+                    "⚠️ Owner: bank/UPI app mein amount aur UTR verify karke hi action karein."
+                ),
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ Approve", callback_data=f"mfa:payapprove:{doc['payment_id']}"),
+                    InlineKeyboardButton("❌ Reject", callback_data=f"mfa:payreject:{doc['payment_id']}"),
+                ]]),
+            )
+        except Exception as exc:
+            logger.warning("Payment approval group notification failed user=%s error_type=%s", user_id, type(exc).__name__)
+
     await update.message.reply_text(
         f"✅ <b>Payment submitted</b>\n\n"
         f"🧾 ID: <code>{doc['payment_id']}</code>\n"
