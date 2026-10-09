@@ -141,8 +141,11 @@ def _prepare_source_thumbnail(
     return None
 
 def _cache_key(url: str, mode: str) -> str:
-    # v4 invalidates Instagram carousel cache created from cover/thumbnail fallbacks.
-    return hashlib.sha256(f"v5|{url}|{mode}".encode("utf-8")).hexdigest()
+    # Invalidate old YouTube cache entries that may have been stored as documents.
+    # Keep other platforms' working cache untouched.
+    platform = detect_platform(url)
+    version = "youtube-mp4-v6" if platform == "YouTube" else "v5"
+    return hashlib.sha256(f"{version}|{url}|{mode}".encode("utf-8")).hexdigest()
 
 
 def _is_owner(user_id: int) -> bool:
