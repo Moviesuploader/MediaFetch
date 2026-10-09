@@ -1084,12 +1084,18 @@ async def payment_proof_callback(update: Update, context: ContextTypes.DEFAULT_T
     draft = _PENDING_PAYMENT_PROOF.get(user.id)
     action = (query.data or "").split(":", 1)[1]
     if not draft:
-        await query.edit_message_caption(caption="⌛ Payment draft expired. Please start payment again.", reply_markup=None)
+        if getattr(query.message, "photo", None):
+            await query.edit_message_caption(caption="⌛ Payment draft expired. Please start payment again.", reply_markup=None)
+        else:
+            await query.edit_message_text("⌛ Payment draft expired. Please start payment again.", reply_markup=None)
         return
     if action == "proofcancel":
         _PENDING_PAYMENT_PROOF.pop(user.id, None)
         _PENDING_PAYMENT_PLAN.pop(user.id, None)
-        await query.edit_message_caption(caption="❌ Payment submission cancelled.", reply_markup=None)
+        if getattr(query.message, "photo", None):
+            await query.edit_message_caption(caption="❌ Payment submission cancelled.", reply_markup=None)
+        else:
+            await query.edit_message_text("❌ Payment submission cancelled.", reply_markup=None)
         return
     if action == "proofeditutr":
         draft["step"] = "edit_utr"
