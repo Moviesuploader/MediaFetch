@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -129,7 +130,7 @@ async def health() -> dict[str, str]:
 
 
 async def _verify_and_activate_cashfree_order(order_id: str) -> str:
-    record = await __import__("asyncio").to_thread(storage.payment_by_gateway_order, order_id)
+    record = await asyncio.to_thread(storage.payment_by_gateway_order, order_id)
     if not record:
         logger.warning("Cashfree event references unknown order_id")
         return "unknown"
@@ -145,14 +146,14 @@ async def _verify_and_activate_cashfree_order(order_id: str) -> str:
         logger.error("Cashfree order amount/currency mismatch; refusing activation")
         return "mismatch"
     try:
-        approved = await __import__("asyncio").to_thread(
+        approved = await asyncio.to_thread(
             storage.approve_payment,
             str(record["payment_id"]),
             0,
             int(record.get("duration_days", 30)),
         )
     except ValueError:
-        current = await __import__("asyncio").to_thread(storage.payment_by_id, str(record["payment_id"]))
+        current = await asyncio.to_thread(storage.payment_by_id, str(record["payment_id"]))
         return "already_paid" if current and current.get("status") == "approved" else "pending"
     try:
         bot = getattr(app.state, "bot", None)
@@ -179,12 +180,12 @@ async def _verify_and_activate_cashfree_order(order_id: str) -> str:
 async def cashfree_checkout(order_id: str) -> HTMLResponse:
     if not cashfree.configured():
         raise HTTPException(status_code=503, detail="Cashfree checkout is not configured.")
-    record = await __import__("asyncio").to_thread(storage.payment_by_gateway_order, order_id)
+    record = await asyncio.to_thread(storage.payment_by_gateway_order, order_id)
     if not record or record.get("provider") != "cashfree" or not record.get("payment_session_id"):
         raise HTTPException(status_code=404, detail="Checkout not found or expired.")
     if record.get("status") != "pending":
         raise HTTPException(status_code=409, detail="This payment is no longer pending.")
-    return HTMLResponse(cashfree.checkout_html(str(record["payment_session_id"]))
+    return HTMLResponse(cashfree.checkout_html(str(record["payment_session_id"])))
 
 
 @app.get("/cashfree/return", response_class=HTMLResponse)
