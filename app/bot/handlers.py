@@ -1027,7 +1027,7 @@ async def _handle_payment_utr(update: Update, context: ContextTypes.DEFAULT_TYPE
         "plan": plan, "utr": utr, "screenshot_file_id": "", "step": "waiting_photo",
         **message_refs,
     }
-    await message.reply_text(
+    prompt_message = await message.reply_text(
         "📎 <b>Payment screenshot bhejo</b>\n\n"
         f"📦 Plan: <b>{PLAN_LABELS[plan]}</b>\n"
         f"🔢 UTR: <code>{html.escape(utr)}</code>\n\n"
@@ -1035,6 +1035,8 @@ async def _handle_payment_utr(update: Update, context: ContextTypes.DEFAULT_TYPE
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="mfp:proofcancel")]]),
     )
+    _PENDING_PAYMENT_PROOF[user_id]["prompt_chat_id"] = str(prompt_message.chat_id)
+    _PENDING_PAYMENT_PROOF[user_id]["prompt_message_id"] = str(prompt_message.message_id)
     try:
         await message.delete()
     except Exception:
@@ -1100,7 +1102,17 @@ async def payment_proof_photo_handler(update: Update, context: ContextTypes.DEFA
         return
     draft["screenshot_file_id"] = message.photo[-1].file_id
     draft["step"] = "confirm"
-    await _show_payment_proof_review(message, draft)
+    # Remove the old UTR/screenshot prompt so its Cancel button cannot remain visible.
+    try:
+        prompt_id = int(draft.get("prompt_message_id", "0"))
+        prompt_chat = int(draft.get("prompt_chat_id", str(message.chat_id)))
+        if prompt_id:
+            await context.bot.delete_message(chat_id=prompt_chat, message_id=prompt_id)
+    except Exception:
+        pass
+    draft.pop("prompt_message_id", None)
+    draft.pop("prompt_chat_id", None)
+    await _show_payment_proof_review(message, draft, context)
     try:
         await message.delete()
     except Exception:
