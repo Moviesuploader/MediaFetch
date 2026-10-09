@@ -96,9 +96,13 @@ class Settings(BaseSettings):
     # Gateway-less manual UPI payments. Prices are configurable via environment.
     payment_upi_id: str = "2001aashish@yescred"
     payment_currency: str = "INR"
-    bronze_price: int = 49
-    platinum_price: int = 99
+    bronze_price: int = 29
+    platinum_price: int = 79
     diamond_price: int = 149
+    # Per-plan subscription duration; payment_duration_days remains a legacy fallback.
+    bronze_duration_days: int = 7
+    platinum_duration_days: int = 30
+    diamond_duration_days: int = 30
     payment_duration_days: int = 30
     payment_qr_url: str = ""
     cache_ttl_days: int = 7
