@@ -1127,10 +1127,15 @@ async def payment_proof_callback(update: Update, context: ContextTypes.DEFAULT_T
         return
     _PENDING_PAYMENT_PROOF.pop(user.id, None)
     _PENDING_PAYMENT_PLAN.pop(user.id, None)
-    markup = InlineKeyboardMarkup([[
+    group_markup = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Approve", callback_data=f"mfa:payapprove:{doc['payment_id']}"),
         InlineKeyboardButton("❌ Reject", callback_data=f"mfa:payreject:{doc['payment_id']}"),
     ]])
+    owner_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"👤 {name[:30]} • Payment details", callback_data=f"mfa:payview:{doc['payment_id']}")],
+        [InlineKeyboardButton("✅ Approve", callback_data=f"mfa:payapprove:{doc['payment_id']}"),
+         InlineKeyboardButton("❌ Reject", callback_data=f"mfa:payreject:{doc['payment_id']}")],
+    ])
     user_label = f'👤 User: <a href="tg://user?id={user.id}">{html.escape(name)}</a> (<code>{user.id}</code>)'
     caption = (
         "🟡 <b>Premium payment approval required</b>\n\n"
@@ -1149,13 +1154,13 @@ async def payment_proof_callback(update: Update, context: ContextTypes.DEFAULT_T
         pass
     for target in owner_ids:
         try:
-            await context.bot.send_photo(chat_id=target, photo=screenshot, caption=caption, parse_mode="HTML", reply_markup=markup)
+            await context.bot.send_photo(chat_id=target, photo=screenshot, caption=caption, parse_mode="HTML", reply_markup=owner_markup)
         except Exception as exc:
             logger.warning("Payment owner notification failed payment_id=%s error_type=%s", doc["payment_id"], type(exc).__name__)
     group_id = str(getattr(settings, "payment_approval_chat_id", "") or "").strip()
     if group_id:
         try:
-            await context.bot.send_photo(chat_id=int(group_id), photo=screenshot, caption=caption, parse_mode="HTML", reply_markup=markup)
+            await context.bot.send_photo(chat_id=int(group_id), photo=screenshot, caption=caption, parse_mode="HTML", reply_markup=group_markup)
         except Exception as exc:
             logger.warning("Payment group notification failed payment_id=%s error_type=%s", doc["payment_id"], type(exc).__name__)
     await query.edit_message_caption(
