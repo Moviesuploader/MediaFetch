@@ -703,7 +703,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         [InlineKeyboardButton("💎 Premium Plans", callback_data="mfp:plans"), InlineKeyboardButton("👤 My Plan", callback_data="mfp:status")],
         [InlineKeyboardButton("🌐 Supported Sites", callback_data="mfp:supported"), InlineKeyboardButton("❓ Help", callback_data="mfp:help")],
     ])
-    panel_id = context.user_data.get("mediafetch_user_panel_message_id")
+    saved_panel = await asyncio.to_thread(storage.get_user_panel, user.id, update.effective_chat.id) if user else None
+    panel_id = (saved_panel or {}).get("message_id") or context.user_data.get("mediafetch_user_panel_message_id")
     if panel_id:
         try:
             await context.bot.edit_message_text(
@@ -722,6 +723,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             context.user_data.pop("mediafetch_user_panel_message_id", None)
     sent = await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
     context.user_data["mediafetch_user_panel_message_id"] = sent.message_id
+    if user:
+        await asyncio.to_thread(storage.set_user_panel, user.id, update.effective_chat.id, sent.message_id)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
