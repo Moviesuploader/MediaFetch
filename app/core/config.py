@@ -93,8 +93,8 @@ class Settings(BaseSettings):
     platinum_daily_limit: int = 75
     diamond_daily_limit: int = 150
 
-    # Gateway-less manual UPI payments. Prices are configurable via environment.
-    payment_upi_id: str = "2001aashish@yescred"
+    # Optional manual UPI fallback. Keep payment identifiers out of source defaults.
+    payment_upi_id: str = ""
     payment_currency: str = "INR"
     bronze_price: int = 29
     platinum_price: int = 79
@@ -105,6 +105,12 @@ class Settings(BaseSettings):
     diamond_duration_days: int = 30
     payment_duration_days: int = 30
     payment_qr_url: str = ""
+
+    # Cashfree hosted checkout. Credentials belong only in the hosting environment.
+    cashfree_app_id: str = ""
+    cashfree_secret_key: str = ""
+    cashfree_environment: str = "sandbox"
+    cashfree_api_version: str = "2025-01-01"
     cache_ttl_days: int = 7
     max_carousel_items: int = 10
 
