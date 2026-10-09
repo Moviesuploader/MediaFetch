@@ -371,6 +371,16 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
     if not settings.youtube_api_enabled or not settings.youtube_api_url:
         return None
 
+    # A /live/UC... URL identifies a channel's live page, not a concrete video.
+    # Third-party resolvers commonly return 500 for channel surfaces; don't
+    # spend the API timeout there. The normal yt-dlp URL-variant flow handles
+    # the canonical /channel/UC.../live route instead.
+    parsed_url = urlsplit(url)
+    channel_live = re.fullmatch(r"/live/(UC[A-Za-z0-9_-]+)", parsed_url.path.rstrip("/"))
+    if channel_live:
+        logger.info("Skipping direct-video API fallback for YouTube channel live page.")
+        return None
+
     base_url = settings.youtube_api_url.rstrip("/")
     api_url = url
     # Normalize /live/<id> to the equivalent watch URL before calling the
