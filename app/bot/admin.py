@@ -322,12 +322,16 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if action == "payment_config":
         parts = (message.text or "").strip().split()
-        if len(parts) != 5 or not all(x.isdigit() for x in parts[1:]):
-            await message.reply_text("⚠️ Format: <code>UPI_ID BRONZE PLATINUM DIAMOND DAYS</code>", parse_mode="HTML")
+        if len(parts) not in {5, 7} or not all(x.isdigit() for x in parts[1:]):
+            await message.reply_text("⚠️ Format: <code>UPI_ID BRONZE_PRICE BRONZE_DAYS PLATINUM_PRICE PLATINUM_DAYS DIAMOND_PRICE DIAMOND_DAYS</code>", parse_mode="HTML")
             return
-        values = {"upi_id": parts[0], "bronze_price": int(parts[1]), "platinum_price": int(parts[2]), "diamond_price": int(parts[3]), "duration_days": int(parts[4]), "currency": "INR"}
-        if min(values["bronze_price"], values["platinum_price"], values["diamond_price"]) <= 0 or not 1 <= values["duration_days"] <= 3650:
-            await message.reply_text("⚠️ Prices > 0 and duration 1–3650 days hona chahiye.")
+        if len(parts) == 7:
+            values = {"upi_id": parts[0], "bronze_price": int(parts[1]), "bronze_duration_days": int(parts[2]), "platinum_price": int(parts[3]), "platinum_duration_days": int(parts[4]), "diamond_price": int(parts[5]), "diamond_duration_days": int(parts[6]), "duration_days": 30, "currency": "INR"}
+        else:
+            values = {"upi_id": parts[0], "bronze_price": int(parts[1]), "platinum_price": int(parts[2]), "diamond_price": int(parts[3]), "duration_days": int(parts[4]), "bronze_duration_days": int(parts[4]), "platinum_duration_days": int(parts[4]), "diamond_duration_days": int(parts[4]), "currency": "INR"}
+        durations = [values["bronze_duration_days"], values["platinum_duration_days"], values["diamond_duration_days"]]
+        if min(values["bronze_price"], values["platinum_price"], values["diamond_price"]) <= 0 or any(days < 1 or days > 3650 for days in durations):
+            await message.reply_text("⚠️ Prices > 0 aur har plan ki duration 1–3650 days honi chahiye.")
             return
         await asyncio.to_thread(storage.set_payment_settings, values)
         _PENDING_ADMIN_ACTIONS.pop(uid, None)
