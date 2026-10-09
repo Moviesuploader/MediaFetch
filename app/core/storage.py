@@ -274,7 +274,7 @@ class Storage:
                 self._payment_settings = dict(clean)
         return clean
 
-    def create_payment(self, payment_id: str, user_id: int, plan: str, amount: int, currency: str, utr: str, duration_days: int = 30, provider: str = "manual", gateway_order_id: str = "", payment_session_id: str = "", screenshot_file_id: str = "", user_name: str = "", username: str = "") -> dict[str, Any]:
+    def create_payment(self, payment_id: str, user_id: int, plan: str, amount: int, currency: str, utr: str, duration_days: int = 30, provider: str = "manual", gateway_order_id: str = "", payment_session_id: str = "", screenshot_file_id: str = "", user_name: str = "", username: str = "", status_chat_id: int | str = 0, status_message_id: int | str = 0) -> dict[str, Any]:
         doc = {
             "payment_id": payment_id, "user_id": int(user_id), "plan": plan,
             "amount": int(amount), "currency": currency, "utr": utr,
@@ -285,6 +285,8 @@ class Storage:
             "screenshot_file_id": str(screenshot_file_id or ""),
             "user_name": str(user_name or user_id)[:120],
             "username": str(username or "").lstrip("@")[:64],
+            "status_chat_id": int(status_chat_id) if str(status_chat_id).lstrip("-").isdigit() else 0,
+            "status_message_id": int(status_message_id) if str(status_message_id).isdigit() else 0,
         }
         if self._db is not None:
             if self._db.payments.find_one({"utr": utr}):
