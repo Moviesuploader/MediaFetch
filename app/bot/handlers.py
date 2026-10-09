@@ -884,6 +884,25 @@ async def payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await query.edit_message_text("⚠️ This payment plan is not configured yet.")
         return
     user_id = update.effective_user.id
+    if cashfree_configured():
+        if query.message.chat.type != "private":
+            await query.message.reply_text("Please open my private chat and choose the plan there to pay securely.")
+            return
+        _PENDING_CASHFREE_PLAN[user_id] = plan
+        await query.message.reply_text(
+            f"💳 <b>{PLAN_LABELS[plan]} • ₹{cfg['prices'][plan]}</b>\n\n"
+            "Cashfree secure checkout ke liye apna Indian mobile number share karo.\n"
+            "Number sirf payment gateway order create karne ke liye use hoga.",
+            parse_mode="HTML",
+            reply_markup=ReplyKeyboardMarkup(
+                [[KeyboardButton("📱 Share my number", request_contact=True)], [KeyboardButton("Cancel")]],
+                resize_keyboard=True, one_time_keyboard=True,
+            ),
+        )
+        return
+    if not cfg["upi_id"]:
+        await query.edit_message_text("⚠️ Payment is not configured. Owner ko Cashfree credentials ya UPI ID configure karni hogi.")
+        return
     _PENDING_PAYMENT_PLAN[user_id] = plan
     text = (
         f"💳 <b>{PLAN_LABELS[plan]} Payment</b>\n\n"
