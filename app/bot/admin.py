@@ -19,6 +19,7 @@ from app.core.payments import PLAN_LABELS, payment_config, payment_summary
 logger = logging.getLogger("mediafetch.admin")
 _PENDING_ADMIN_ACTIONS: dict[int, str] = {}
 _PENDING_BROADCASTS: dict[int, tuple[int, int]] = {}
+_PANEL_MESSAGES: dict[int, tuple[int, int]] = {}
 
 
 def _owner_id() -> int | None:
@@ -68,6 +69,27 @@ async def _edit_payment_message(message, text: str, reply_markup=None) -> None:
     else:
         await message.edit_text(text, parse_mode="HTML", reply_markup=reply_markup)
 
+async def _panel_edit(context: ContextTypes.DEFAULT_TYPE, uid: int, text: str, reply_markup=None) -> bool:
+    target = _PANEL_MESSAGES.get(uid)
+    if not target:
+        return False
+    try:
+        await context.bot.edit_message_text(
+            chat_id=target[0], message_id=target[1], text=text,
+            parse_mode="HTML", reply_markup=reply_markup,
+        )
+        return True
+    except Exception as exc:
+        logger.warning("Owner panel edit failed user=%s error_type=%s", uid, type(exc).__name__)
+        return False
+
+
+async def _swallow(message) -> None:
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
 
 def _channels_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -109,7 +131,8 @@ async def _render_home(message, edit: bool = True) -> None:
     if edit:
         await message.edit_text(text, parse_mode="HTML", reply_markup=_main_keyboard())
     else:
-        await message.reply_text(text, parse_mode="HTML", reply_markup=_main_keyboard())
+        sent = await message.reply_text(text, parse_mode="HTML", reply_markup=_main_keyboard())
+        return sent
 
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -118,7 +141,8 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     _PENDING_ADMIN_ACTIONS.pop(uid, None)
     _PENDING_BROADCASTS.pop(uid, None)
-    await _render_home(update.message, edit=False)
+    sent = await _render_home(update.message, edit=False)
+    _PANEL_MESSAGES[uid] = (sent.chat_id, sent.message_id) if sent else (update.message.chat_id, update.message.message_id)
 
 
 async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -139,6 +163,8 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.answer("Owner only.", show_alert=True)
         return
     await query.answer()
+    if is_private and uid is not None:
+        _PANEL_MESSAGES[uid] = (query.message.chat_id, query.message.message_id)
 
     if action in {"cancel", "home"}:
         _PENDING_ADMIN_ACTIONS.pop(uid, None)
