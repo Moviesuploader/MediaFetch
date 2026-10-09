@@ -61,6 +61,13 @@ def _back_keyboard() -> InlineKeyboardMarkup:
          InlineKeyboardButton("❌ Cancel", callback_data="mfa:cancel")]
     ])
 
+async def _edit_payment_message(message, text: str, reply_markup=None) -> None:
+    """Approval messages are photos with captions; owner-panel details are text messages."""
+    if getattr(message, "photo", None):
+        await message.edit_caption(caption=text, parse_mode="HTML", reply_markup=reply_markup)
+    else:
+        await message.edit_text(text, parse_mode="HTML", reply_markup=reply_markup)
+
 
 def _channels_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -195,7 +202,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         try:
             doc = await asyncio.to_thread(storage.approve_payment, payment_id, uid, payment_config()["duration_days"])
         except ValueError as exc:
-            await query.message.edit_text(f"⚠️ {exc}", reply_markup=_back_keyboard())
+            await _edit_payment_message(query.message, f"⚠️ {exc}", reply_markup=_back_keyboard())
             return
         expires = float(doc.get("subscription_until") or 0)
         date = datetime.fromtimestamp(expires, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -203,7 +210,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await context.bot.send_message(chat_id=int(doc["user_id"]), text=f"✅ <b>Payment approved!</b>\n\n📦 Plan: <b>{PLAN_LABELS.get(doc.get('plan'), doc.get('plan'))}</b>\n⏳ Active until: <b>{date}</b>", parse_mode="HTML")
         except Exception:
             logger.warning("Could not notify approved payment id=%s", payment_id)
-        await query.message.edit_text(payment_summary(doc) + f"\n\n✅ <b>Approved</b>\n⏳ Active until: <b>{date}</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💳 Payments", callback_data="mfa:payments")]]))
+        await _edit_payment_message(query.message, payment_summary(doc) + f"\n\n✅ <b>Approved</b>\n⏳ Active until: <b>{date}</b>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💳 Payments", callback_data="mfa:payments")]]))
         return
 
     if action.startswith("payreject:"):
@@ -217,7 +224,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await context.bot.send_message(chat_id=int(doc["user_id"]), text="❌ <b>Payment rejected.</b>\nPlease contact the owner if this is unexpected.", parse_mode="HTML")
         except Exception:
             logger.warning("Could not notify rejected payment id=%s", payment_id)
-        await query.message.edit_text(payment_summary(doc) + "\n\n❌ <b>Rejected</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💳 Payments", callback_data="mfa:payments")]]))
+        await _edit_payment_message(query.message, payment_summary(doc) + "\n\n❌ <b>Rejected</b>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💳 Payments", callback_data="mfa:payments")]]))
         return
 
     if action == "payconfig":
