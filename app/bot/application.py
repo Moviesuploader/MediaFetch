@@ -28,6 +28,7 @@ from app.bot.handlers import (
     premium_status,
     plans_command,
     payment_callback,
+    payment_proof_photo_handler,
     history_command,
     start,
     supported,
@@ -89,6 +90,7 @@ def build_application() -> Application:
     application.add_handler(CallbackQueryHandler(download_choice, pattern=r"^mf:"))
     application.add_handler(CallbackQueryHandler(payment_callback, pattern=r"^mfp:"))
     application.add_handler(CallbackQueryHandler(admin_callback, pattern=r"^mfa:"))
+    application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, payment_proof_photo_handler))
     application.add_handler(MessageHandler(filters.CONTACT | (filters.TEXT & filters.Regex(r"(?i)^cancel$")), cashfree_contact_handler))
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url)
