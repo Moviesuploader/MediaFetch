@@ -924,6 +924,73 @@ async def payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     )
 
 
+async def cashfree_contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.message
+    user = update.effective_user
+    if not message or not user:
+        return
+    if (message.text or "").strip().lower() == "cancel":
+        _PENDING_CASHFREE_PLAN.pop(user.id, None)
+        await message.reply_text("Payment cancelled.", reply_markup=ReplyKeyboardRemove())
+        return
+    plan = _PENDING_CASHFREE_PLAN.get(user.id)
+    if not plan:
+        return
+    contact = message.contact
+    if not contact or contact.user_id != user.id:
+        await message.reply_text(
+            "Please use the button to share your own phone number.",
+            reply_markup=ReplyKeyboardMarkup([[KeyboardButton("📱 Share my number", request_contact=True)]], resize_keyboard=True, one_time_keyboard=True),
+        )
+        return
+    digits = re.sub(r"\D", "", contact.phone_number or "")
+    if len(digits) == 12 and digits.startswith("91"):
+        digits = digits[2:]
+    if len(digits) != 10 or digits[0] not in "6789":
+        await message.reply_text(
+            "Please share a valid Indian mobile number.",
+            reply_markup=ReplyKeyboardMarkup([[KeyboardButton("📱 Share my number", request_contact=True)]], resize_keyboard=True, one_time_keyboard=True),
+        )
+        return
+    cfg = payment_config()
+    amount = int(cfg["prices"].get(plan, 0))
+    if amount <= 0:
+        _PENDING_CASHFREE_PLAN.pop(user.id, None)
+        await message.reply_text("This plan is currently unavailable.", reply_markup=ReplyKeyboardRemove())
+        return
+    order_id = f"mf{user.id}{int(time.time())}{secrets.token_hex(4)}"
+    status_message = await message.reply_text("🔐 Creating secure Cashfree checkout…", reply_markup=ReplyKeyboardRemove())
+    try:
+        order = await cashfree_create_order(order_id=order_id, amount=amount, user_id=user.id, phone=digits, plan=plan)
+        await asyncio.to_thread(
+            storage.create_payment,
+            payment_id=secrets.token_hex(6).upper(),
+            user_id=user.id,
+            plan=plan,
+            amount=amount,
+            currency="INR",
+            utr=f"CF-{order_id}",
+            duration_days=int(cfg["durations"][plan]),
+            provider="cashfree",
+            gateway_order_id=order_id,
+            payment_session_id=str(order["payment_session_id"]),
+        )
+        checkout_url = f"{cashfree_public_base_url()}/cashfree/checkout/{order_id}"
+        await status_message.edit_text(
+            f"💳 <b>{PLAN_LABELS[plan]} checkout ready</b>\n\n"
+            f"💰 Amount: <b>₹{amount}</b>\n"
+            f"⏳ Validity: <b>{cfg['durations'][plan]} days</b>\n\n"
+            "Tap below to pay. Plan activates only after Cashfree confirms payment with our server.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔒 Pay securely with Cashfree", url=checkout_url)]]),
+        )
+    except Exception as exc:
+        logger.warning("Cashfree checkout creation failed user=%s error_type=%s", user.id, type(exc).__name__)
+        await status_message.edit_text("⚠️ Secure checkout create nahi ho paya. Thodi der baad dobara try karo.")
+    finally:
+        _PENDING_CASHFREE_PLAN.pop(user.id, None)
+
+
 async def _handle_payment_utr(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
     plan = _PENDING_PAYMENT_PLAN.get(user_id)
     if not plan or not update.message or not update.message.text:
