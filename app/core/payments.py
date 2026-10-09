@@ -25,6 +25,11 @@ def payment_config() -> dict[str, Any]:
             "diamond": max(0, int(saved.get("diamond_price", 0))),
         },
         "duration_days": max(1, int(saved.get("duration_days", 30))),
+        "durations": {
+            "bronze": max(1, int(saved.get("bronze_duration_days", saved.get("duration_days", 7)))),
+            "platinum": max(1, int(saved.get("platinum_duration_days", saved.get("duration_days", 30)))),
+            "diamond": max(1, int(saved.get("diamond_duration_days", saved.get("duration_days", 30)))),
+        },
         "qr_url": str(saved.get("qr_url") or "").strip(),
     }
 
@@ -51,7 +56,7 @@ def create_payment(user_id: int, plan: str, utr: str) -> dict[str, Any]:
         amount=amount,
         currency=cfg["currency"],
         utr=utr,
-        duration_days=int(cfg["duration_days"]),
+        duration_days=int(cfg["durations"][plan]),
     )
 
 
