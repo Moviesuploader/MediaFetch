@@ -851,12 +851,12 @@ async def payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if query.data == "mfp:plans":
         cfg = payment_config()
         limits = storage.file_limits()
-        lines = ["💎 <b>MediaFetch Premium</b>", ""]
+        lines = ["💎 <b>MediaFetch Premium Plans</b>", ""]
         rows = []
         for tier in PLANS:
             price = cfg["prices"][tier]
             days = cfg["durations"][tier]
-            lines.append(f"{PLAN_LABELS[tier]} — ₹{price} / {days} days • {limits[tier]} MB/file")
+            lines.append(f"{PLAN_LABELS[tier]} — <b>{price} {cfg['currency']}</b> • <b>{days} days</b> • <b>{limits[tier]} MB/file</b>")
             if price > 0 and cfg["upi_id"]:
                 rows.append([InlineKeyboardButton(f"Buy {PLAN_LABELS[tier]} • ₹{price}", callback_data=f"mfp:buy:{tier}")])
         await query.edit_message_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(rows) if rows else None)
@@ -871,7 +871,7 @@ async def payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             until = datetime.fromtimestamp(float(info["until"]), tz=timezone.utc).strftime("%d %b %Y, %H:%M UTC")
             status_text = f"👤 <b>Your Plan</b>\n\n📦 {tier.title()} • {limits.get(tier, limits['free'])} MB/file\n⏳ Expires: {until}\n📥 Today: {used}/{storage.daily_limit(update.effective_user.id)}"
         else:
-            status_text = f"👤 <b>Your Plan</b>\n\n🆓 Free • {limits['free']} MB/file\n📥 Today: {used}/{settings.free_daily_limit}
+            status_text = f"👤 <b>Your Plan</b>\n\n🆓 Free • {limits['free']} MB/file\n📥 Today: {used}/{settings.free_daily_limit}"
         await query.edit_message_text(status_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💎 Premium Plans", callback_data="mfp:plans")]]))
         return
     if query.data == "mfp:supported":
