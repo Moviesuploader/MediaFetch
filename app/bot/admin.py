@@ -188,13 +188,22 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if not doc:
             await query.message.edit_text("❌ Payment not found.", reply_markup=_back_keyboard())
             return
-        await query.message.edit_text(
-            payment_summary(doc) + "\n\n⚠️ Verify payment in your UPI/bank app before approving.",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Approve", callback_data=f"mfa:payapprove:{payment_id}"), InlineKeyboardButton("❌ Reject", callback_data=f"mfa:payreject:{payment_id}")],
-                [InlineKeyboardButton("🔙 Pending", callback_data="mfa:paypending")]
-            ]))
+        details_text = payment_summary(doc) + "\n\n⚠️ Verify payment in your UPI/bank app before approving."
+        if getattr(query.message, "photo", None):
+            await _edit_payment_message(
+                query.message, details_text,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ Approve", callback_data=f"mfa:payapprove:{payment_id}"),
+                     InlineKeyboardButton("❌ Reject", callback_data=f"mfa:payreject:{payment_id}")]
+                ]),
+            )
+        else:
+            await query.message.edit_text(
+                details_text, parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ Approve", callback_data=f"mfa:payapprove:{payment_id}"), InlineKeyboardButton("❌ Reject", callback_data=f"mfa:payreject:{payment_id}")],
+                    [InlineKeyboardButton("🔙 Pending", callback_data="mfa:paypending")]
+                ]))
         return
 
     if action.startswith("payapprove:"):
