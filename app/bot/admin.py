@@ -539,14 +539,23 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 failed += 1
             await asyncio.sleep(0.05)
         _PENDING_ADMIN_ACTIONS.pop(uid, None)
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception:
+            pass
         await query.message.edit_text(
             f"📢 <b>Broadcast finished</b>\n\n✅ Sent: <b>{sent}</b>\n❌ Failed: <b>{failed}</b>",
             parse_mode="HTML", reply_markup=_main_keyboard())
         return
 
     if action == "broadcast_cancel":
-        _PENDING_BROADCASTS.pop(uid, None)
+        source = _PENDING_BROADCASTS.pop(uid, None)
         _PENDING_ADMIN_ACTIONS.pop(uid, None)
+        if source:
+            try:
+                await context.bot.delete_message(chat_id=source[0], message_id=source[1])
+            except Exception:
+                pass
         await _render_home(query.message)
         return
 
@@ -648,11 +657,11 @@ async def admin_message_router(update: Update, context: ContextTypes.DEFAULT_TYP
     if action == "broadcast":
         _PENDING_BROADCASTS[uid] = (message.chat_id, message.message_id)
         _PENDING_ADMIN_ACTIONS[uid] = "broadcast_review"
-        await message.reply_text(
+        await _panel_edit(
+            context, uid,
             "📢 <b>Broadcast Review</b>\n\nMessage receive ho gaya. "
-            "Sab users ko bhejne se pehle confirm karo.",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([
+            "Sab users ko bhejne se pehle confirm karo. Source message review ke baad automatically delete hoga.",
+            InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ Confirm & Send", callback_data="mfa:broadcast_confirm")],
                 [InlineKeyboardButton("🔄 Replace", callback_data="mfa:broadcast")],
                 [InlineKeyboardButton("🔙 Back", callback_data="mfa:home"),
