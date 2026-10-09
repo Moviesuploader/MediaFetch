@@ -238,6 +238,9 @@ class Storage:
             "bronze_price": int(settings.bronze_price),
             "platinum_price": int(settings.platinum_price),
             "diamond_price": int(settings.diamond_price),
+            "bronze_duration_days": max(1, int(getattr(settings, "bronze_duration_days", settings.payment_duration_days))),
+            "platinum_duration_days": max(1, int(getattr(settings, "platinum_duration_days", settings.payment_duration_days))),
+            "diamond_duration_days": max(1, int(getattr(settings, "diamond_duration_days", settings.payment_duration_days))),
             "duration_days": max(1, int(settings.payment_duration_days)),
             "qr_url": str(settings.payment_qr_url or ""),
         }
@@ -258,6 +261,9 @@ class Storage:
             "bronze_price": max(0, int(values.get("bronze_price", 0))),
             "platinum_price": max(0, int(values.get("platinum_price", 0))),
             "diamond_price": max(0, int(values.get("diamond_price", 0))),
+            "bronze_duration_days": max(1, min(int(values.get("bronze_duration_days", values.get("duration_days", 7))), 3650)),
+            "platinum_duration_days": max(1, min(int(values.get("platinum_duration_days", values.get("duration_days", 30))), 3650)),
+            "diamond_duration_days": max(1, min(int(values.get("diamond_duration_days", values.get("duration_days", 30))), 3650)),
             "duration_days": max(1, min(int(values.get("duration_days", 30)), 3650)),
             "qr_url": str(values.get("qr_url", "")).strip(),
         }
