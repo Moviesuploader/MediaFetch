@@ -14,7 +14,7 @@ from pathlib import Path
 from urllib.parse import quote_plus, urlsplit
 
 from telegram.error import BadRequest
-from telegram import InputFile, InputMediaPhoto, InputMediaVideo, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InputFile, InputMediaPhoto, InputMediaVideo, InlineKeyboardButton, InlineKeyboardMarkup, Update, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
 
 import qrcode
 from telegram.constants import ChatAction
@@ -25,6 +25,7 @@ from app.bot.admin import admin_has_pending_action, admin_message_router
 from app.core.rate_limit import UserRateLimiter
 from app.core.storage import storage
 from app.core.payments import PLANS, PLAN_LABELS, create_payment, payment_config, valid_utr
+from app.core.cashfree import configured as cashfree_configured, create_order as cashfree_create_order, public_base_url as cashfree_public_base_url
 from app.bot.mtproto import LargeUploadError, mtproto_uploader
 from app.downloader.detector import detect_platform
 from app.downloader.service import DownloadError, MediaInfo, download_media, get_media_info
@@ -34,6 +35,7 @@ _ACTIVE_JOBS: dict[tuple[int, str], tuple[asyncio.Task, threading.Event]] = {}
 _ACTIVE_LOCK = asyncio.Lock()
 _PENDING_REQUESTS: dict[int, tuple[str, str, str, MediaInfo | None, str | None, object | None]] = {}
 _PENDING_PAYMENT_PLAN: dict[int, str] = {}
+_PENDING_CASHFREE_PLAN: dict[int, str] = {}
 _PENDING_LOCK = asyncio.Lock()
 class _DynamicDownloadLimiter:
     def __init__(self) -> None:
@@ -795,7 +797,7 @@ async def plans_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         price = cfg["prices"][plan]
         days = cfg["durations"][plan]
         lines.append(f"{PLAN_LABELS[plan]} — <b>{price} {cfg['currency']}</b> • <b>{days} days</b> • <b>{limits[plan]} MB/file</b>" if price > 0 else f"{PLAN_LABELS[plan]} — <b>Not configured</b>")
-        if price > 0 and cfg["upi_id"]:
+        if price > 0 and (cfg["upi_id"] or cashfree_configured()):
             buttons.append([InlineKeyboardButton(f"{PLAN_LABELS[plan]} • ₹{price} / {days}d", callback_data=f"mfp:buy:{plan}")])
     if not cfg["upi_id"]:
         lines.append("\n⚠️ UPI payment is currently not configured.")
