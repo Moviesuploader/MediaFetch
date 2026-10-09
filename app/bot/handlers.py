@@ -35,6 +35,7 @@ _ACTIVE_JOBS: dict[tuple[int, str], tuple[asyncio.Task, threading.Event]] = {}
 _ACTIVE_LOCK = asyncio.Lock()
 _PENDING_REQUESTS: dict[int, tuple[str, str, str, MediaInfo | None, str | None, object | None]] = {}
 _PENDING_PAYMENT_PLAN: dict[int, str] = {}
+_PENDING_PAYMENT_PROOF: dict[int, dict[str, str]] = {}
 _PENDING_CASHFREE_PLAN: dict[int, str] = {}
 _PENDING_LOCK = asyncio.Lock()
 class _DynamicDownloadLimiter:
@@ -843,6 +844,9 @@ async def payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if not query or not query.message or not update.effective_user:
         return
     await query.answer()
+    if query.data and query.data.startswith("mfp:proof"):
+        await payment_proof_callback(update, context)
+        return
     if query.data == "mfp:plans":
         cfg = payment_config()
         limits = storage.file_limits()
@@ -992,82 +996,167 @@ async def cashfree_contact_handler(update: Update, context: ContextTypes.DEFAULT
 
 
 async def _handle_payment_utr(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
-    plan = _PENDING_PAYMENT_PLAN.get(user_id)
-    if not plan or not update.message or not update.message.text:
+    message = update.message
+    if not message or not message.text:
         return False
-    utr = update.message.text.strip()
-    if not valid_utr(utr):
-        await update.message.reply_text("⚠️ Invalid UTR/reference. Please send the transaction reference only.")
-        return True
-    try:
-        doc = await asyncio.to_thread(create_payment, user_id, plan, utr)
-    except ValueError as exc:
-        await update.message.reply_text(f"⚠️ {html.escape(str(exc))}", parse_mode="HTML")
-        return True
-    _PENDING_PAYMENT_PLAN.pop(user_id, None)
-    cfg = payment_config()
-    notify_admins = set(settings.admin_id_set)
-    try:
-        if settings.owner_id:
-            notify_admins.add(int(str(settings.owner_id).strip()))
-    except (TypeError, ValueError):
-        pass
-    for admin_id in notify_admins:
+    draft = _PENDING_PAYMENT_PROOF.get(user_id)
+    utr = message.text.strip()
+    if draft and draft.get("step") == "edit_utr":
+        if not valid_utr(utr):
+            await message.reply_text("⚠️ Invalid UTR/reference. Please send a valid transaction reference.")
+            return True
+        draft["utr"] = utr
+        draft["step"] = "confirm"
         try:
-            await context.bot.send_message(
-                chat_id=admin_id,
-                text=(
-                    f"🟡 <b>New payment pending</b>\n\n"
-                    f"🧾 ID: <code>{doc['payment_id']}</code>\n"
-                    f"👤 User: <code>{user_id}</code>\n"
-                    f"📦 Plan: <b>{PLAN_LABELS[plan]}</b>\n"
-                    f"💰 Amount: <b>{doc['amount']} {doc['currency']}</b>\n"
-                    f"🔢 UTR: <code>{html.escape(utr)}</code>"
-                ),
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("✅ Approve", callback_data=f"mfa:payapprove:{doc['payment_id']}"),
-                    InlineKeyboardButton("❌ Reject", callback_data=f"mfa:payreject:{doc['payment_id']}"),
-                ]]),
-            )
+            await message.delete()
         except Exception:
-            logger.warning("Payment admin notification failed user=%s", user_id)
+            pass
+        await _show_payment_proof_review(message, draft)
+        return True
 
-    # Optional configured group gets actionable approval buttons. Only OWNER_ID
-    # can use them; the same payment remains available in the private owner panel.
-    approval_chat_id = str(getattr(settings, "payment_approval_chat_id", "") or "").strip()
-    if approval_chat_id:
-        try:
-            await context.bot.send_message(
-                chat_id=int(approval_chat_id),
-                text=(
-                    f"🟡 <b>Premium payment approval required</b>\n\n"
-                    f"🧾 ID: <code>{doc['payment_id']}</code>\n"
-                    f"👤 User: <code>{user_id}</code>\n"
-                    f"📦 Plan: <b>{PLAN_LABELS[plan]}</b>\n"
-                    f"💰 Amount: <b>{doc['amount']} {doc['currency']}</b>\n"
-                    f"🔢 UTR: <code>{html.escape(utr)}</code>\n\n"
-                    "⚠️ Owner: bank/UPI app mein amount aur UTR verify karke hi action karein."
-                ),
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("✅ Approve", callback_data=f"mfa:payapprove:{doc['payment_id']}"),
-                    InlineKeyboardButton("❌ Reject", callback_data=f"mfa:payreject:{doc['payment_id']}"),
-                ]]),
-            )
-        except Exception as exc:
-            logger.warning("Payment approval group notification failed user=%s error_type=%s", user_id, type(exc).__name__)
+    plan = _PENDING_PAYMENT_PLAN.get(user_id)
+    if not plan:
+        return False
+    if not valid_utr(utr):
+        await message.reply_text("⚠️ Invalid UTR/reference. Please send the transaction reference only.")
+        return True
+    _PENDING_PAYMENT_PROOF[user_id] = {
+        "plan": plan, "utr": utr, "screenshot_file_id": "", "step": "waiting_photo",
+    }
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    await message.reply_text(
+        "📎 <b>Payment screenshot bhejo</b>\n\n"
+        f"📦 Plan: <b>{PLAN_LABELS[plan]}</b>\n"
+        f"🔢 UTR: <code>{html.escape(utr)}</code>\n\n"
+        "Screenshot ke baad details confirm ya re-edit kar sakoge. Confirm se pehle approval request nahi jayegi.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="mfp:proofcancel")]]),
+    )
+    return True
 
-    await update.message.reply_text(
-        f"✅ <b>Payment submitted</b>\n\n"
-        f"🧾 ID: <code>{doc['payment_id']}</code>\n"
+
+async def _show_payment_proof_review(message, draft: dict[str, str]) -> None:
+    plan = draft["plan"]
+    cfg = payment_config()
+    await message.reply_photo(
+        photo=draft["screenshot_file_id"],
+        caption=(
+            "🔎 <b>Confirm payment details</b>\n\n"
+            f"📦 Plan: <b>{PLAN_LABELS[plan]}</b>\n"
+            f"💰 Amount: <b>{cfg['prices'][plan]} {cfg['currency']}</b>\n"
+            f"🔢 UTR: <code>{html.escape(draft['utr'])}</code>\n"
+            "📎 Screenshot attached\n\n"
+            "Details check karo. Confirm karne par request owner PM + configured group mein jayegi."
+        ),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Confirm & Submit", callback_data="mfp:proofconfirm"),
+             InlineKeyboardButton("✏️ Re-edit UTR", callback_data="mfp:proofeditutr")],
+            [InlineKeyboardButton("🖼 Replace Screenshot", callback_data="mfp:proofreplace"),
+             InlineKeyboardButton("❌ Cancel", callback_data="mfp:proofcancel")],
+        ]),
+    )
+
+
+async def payment_proof_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message, user = update.message, update.effective_user
+    if not message or not user or not message.photo:
+        return
+    draft = _PENDING_PAYMENT_PROOF.get(user.id)
+    if not draft or draft.get("step") != "waiting_photo":
+        return
+    draft["screenshot_file_id"] = message.photo[-1].file_id
+    draft["step"] = "confirm"
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    await _show_payment_proof_review(message, draft)
+
+
+async def payment_proof_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query, user = update.callback_query, update.effective_user
+    if not query or not query.message or not user:
+        return
+    draft = _PENDING_PAYMENT_PROOF.get(user.id)
+    action = (query.data or "").split(":", 1)[1]
+    await query.answer()
+    if not draft:
+        await query.edit_message_caption(caption="⌛ Payment draft expired. Please start payment again.", reply_markup=None)
+        return
+    if action == "proofcancel":
+        _PENDING_PAYMENT_PROOF.pop(user.id, None)
+        _PENDING_PAYMENT_PLAN.pop(user.id, None)
+        await query.edit_message_caption(caption="❌ Payment submission cancelled.", reply_markup=None)
+        return
+    if action == "proofeditutr":
+        draft["step"] = "edit_utr"
+        await query.edit_message_caption(
+            caption="✏️ <b>Re-edit UTR</b>\n\nCorrect UTR/reference text mein bhejo. Screenshot saved rahega.",
+            parse_mode="HTML", reply_markup=None,
+        )
+        return
+    if action == "proofreplace":
+        draft["step"] = "waiting_photo"
+        await query.edit_message_caption(caption="🖼 Ab replacement screenshot bhejo. UTR same rahega.", reply_markup=None)
+        return
+    if action != "proofconfirm":
+        return
+    if draft.get("step") != "confirm" or not draft.get("screenshot_file_id"):
+        await query.answer("UTR aur screenshot dono required hain.", show_alert=True)
+        return
+
+    plan, utr, screenshot = draft["plan"], draft["utr"], draft["screenshot_file_id"]
+    name = (user.full_name or str(user.id))[:120]
+    username = user.username or ""
+    try:
+        doc = await asyncio.to_thread(
+            create_payment, user.id, plan, utr,
+            screenshot_file_id=screenshot, user_name=name, username=username,
+        )
+    except ValueError as exc:
+        await query.edit_message_caption(caption=f"⚠️ {html.escape(str(exc))}", parse_mode="HTML")
+        return
+    _PENDING_PAYMENT_PROOF.pop(user.id, None)
+    _PENDING_PAYMENT_PLAN.pop(user.id, None)
+    markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Approve", callback_data=f"mfa:payapprove:{doc['payment_id']}"),
+        InlineKeyboardButton("❌ Reject", callback_data=f"mfa:payreject:{doc['payment_id']}"),
+    ]])
+    user_label = f'👤 User: <a href="tg://user?id={user.id}">{html.escape(name)}</a> (<code>{user.id}</code>)'
+    caption = (
+        "🟡 <b>Premium payment approval required</b>\n\n"
+        f"🧾 ID: <code>{doc['payment_id']}</code>\n{user_label}\n"
         f"📦 Plan: <b>{PLAN_LABELS[plan]}</b>\n"
         f"💰 Amount: <b>{doc['amount']} {doc['currency']}</b>\n"
-        f"🔢 UTR: <code>{html.escape(utr)}</code>\n\n"
-        "🕒 Status: <b>Pending verification</b>\n"
-        "Aapka plan owner payment verify karne ke baad activate karega."
-    , parse_mode="HTML")
-    return True
+        f"🔢 UTR: <code>{html.escape(utr)}</code>\n"
+        "📎 Payment screenshot attached.\n\n"
+        "⚠️ Owner: UPI/bank app mein amount aur UTR verify karke hi approve/reject karein."
+    )
+    owner_ids = set()
+    try:
+        if settings.owner_id:
+            owner_ids.add(int(str(settings.owner_id).strip()))
+    except (TypeError, ValueError):
+        pass
+    for target in owner_ids:
+        try:
+            await context.bot.send_photo(chat_id=target, photo=screenshot, caption=caption, parse_mode="HTML", reply_markup=markup)
+        except Exception as exc:
+            logger.warning("Payment owner notification failed payment_id=%s error_type=%s", doc["payment_id"], type(exc).__name__)
+    group_id = str(getattr(settings, "payment_approval_chat_id", "") or "").strip()
+    if group_id:
+        try:
+            await context.bot.send_photo(chat_id=int(group_id), photo=screenshot, caption=caption, parse_mode="HTML", reply_markup=markup)
+        except Exception as exc:
+            logger.warning("Payment group notification failed payment_id=%s error_type=%s", doc["payment_id"], type(exc).__name__)
+    await query.edit_message_caption(
+        caption=f"✅ <b>Payment proof submitted</b>\n\nID: <code>{doc['payment_id']}</code>\nPlan: <b>{PLAN_LABELS[plan]}</b>\nUTR: <code>{html.escape(utr)}</code>\n\n🕒 Pending verification.",
+        parse_mode="HTML", reply_markup=None,
+    )
 
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
