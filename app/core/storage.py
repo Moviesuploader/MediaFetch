@@ -274,7 +274,7 @@ class Storage:
                 self._payment_settings = dict(clean)
         return clean
 
-    def create_payment(self, payment_id: str, user_id: int, plan: str, amount: int, currency: str, utr: str, duration_days: int = 30, provider: str = "manual", gateway_order_id: str = "", payment_session_id: str = "") -> dict[str, Any]:
+    def create_payment(self, payment_id: str, user_id: int, plan: str, amount: int, currency: str, utr: str, duration_days: int = 30, provider: str = "manual", gateway_order_id: str = "", payment_session_id: str = "", screenshot_file_id: str = "", user_name: str = "", username: str = "") -> dict[str, Any]:
         doc = {
             "payment_id": payment_id, "user_id": int(user_id), "plan": plan,
             "amount": int(amount), "currency": currency, "utr": utr,
@@ -282,6 +282,9 @@ class Storage:
             "verified_at": None, "verified_by": None, "subscription_until": None,
             "provider": str(provider or "manual"), "gateway_order_id": str(gateway_order_id or ""),
             "payment_session_id": str(payment_session_id or ""),
+            "screenshot_file_id": str(screenshot_file_id or ""),
+            "user_name": str(user_name or user_id)[:120],
+            "username": str(username or "").lstrip("@")[:64],
         }
         if self._db is not None:
             if self._db.payments.find_one({"utr": utr}):
