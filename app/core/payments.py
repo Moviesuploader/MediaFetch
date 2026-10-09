@@ -80,7 +80,7 @@ def payment_summary(doc: dict[str, Any]) -> str:
         f"👤 User: <code>{doc.get('user_id', '—')}</code>\n"
         f"📦 Plan: <b>{label}</b>\n"
         f"💰 Amount: <b>{doc.get('amount', 0)} {doc.get('currency', 'INR')}</b>\n"
-        f"🔢 UTR: <code>{doc.get('utr', '—')}</code>\n"
+        (f"🔗 Cashfree order: <code>{doc.get('gateway_order_id', '—')}</code>\n" if doc.get("provider") == "cashfree" else f"🔢 UTR: <code>{doc.get('utr', '—')}</code>\n")
         f"📌 Status: <b>{str(doc.get('status', 'pending')).upper()}</b>\n"
         f"🕒 Created: <code>{format_payment_time(doc.get('created_at'))}</code>"
     )
