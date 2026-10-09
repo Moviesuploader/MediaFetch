@@ -668,14 +668,18 @@ def _quality_keyboard(info: MediaInfo, request_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message:
-        return
-    user = update.effective_user
-    if user:
-        await asyncio.to_thread(storage.touch_user, user.id, user.username)
+def _user_panel_keyboard(extra_rows=None) -> InlineKeyboardMarkup:
+    rows = list(extra_rows or [])
+    rows.append([
+        InlineKeyboardButton("🔙 Back", callback_data="mfp:home"),
+        InlineKeyboardButton("✖️ Close", callback_data="mfp:close"),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+def _user_home_text() -> str:
     limits = storage.file_limits()
-    await update.message.reply_text(
+    return (
         "⚡ <b>Welcome to MediaFetch</b>\n━━━━━━━━━━━━━━━━━━\n\n"
         "🔗 Send a public media link and choose your quality.\n"
         "🎬 Video • 🎵 MP3 • 📸 HD Photos • 🖼️ Carousels\n\n"
@@ -684,13 +688,40 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"🥉 Bronze: <b>{limits['bronze']} MB</b>\n"
         f"💎 Platinum: <b>{limits['platinum']} MB</b>\n"
         f"👑 Diamond: <b>{limits['diamond']} MB</b>\n\n"
-        "👇 Manage your plan or explore supported sites below.",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("💎 Premium Plans", callback_data="mfp:plans"), InlineKeyboardButton("👤 My Plan", callback_data="mfp:status")],
-            [InlineKeyboardButton("🌐 Supported Sites", callback_data="mfp:supported"), InlineKeyboardButton("❓ Help", callback_data="mfp:help")],
-        ]),
+        "👇 Manage your plan or explore supported sites below."
     )
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    user = update.effective_user
+    if user:
+        await asyncio.to_thread(storage.touch_user, user.id, user.username)
+    text = _user_home_text()
+    keyboard = _user_panel_keyboard([
+        [InlineKeyboardButton("💎 Premium Plans", callback_data="mfp:plans"), InlineKeyboardButton("👤 My Plan", callback_data="mfp:status")],
+        [InlineKeyboardButton("🌐 Supported Sites", callback_data="mfp:supported"), InlineKeyboardButton("❓ Help", callback_data="mfp:help")],
+    ])
+    panel_id = context.user_data.get("mediafetch_user_panel_message_id")
+    if panel_id:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=int(panel_id),
+                text=text,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+            try:
+                await update.message.delete()
+            except Exception:
+                pass
+            return
+        except Exception:
+            context.user_data.pop("mediafetch_user_panel_message_id", None)
+    sent = await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+    context.user_data["mediafetch_user_panel_message_id"] = sent.message_id
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
