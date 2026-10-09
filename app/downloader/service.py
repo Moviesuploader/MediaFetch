@@ -575,13 +575,41 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
                     "Referer": "https://www.youtube.com/",
                 },
             )
-            with urllib.request.urlopen(
-                request,
-                # Cap the external resolver wait so a slow third-party API cannot add a\n                # full 15-30 seconds before yt-dlp gets a chance to run.\n                timeout=max(1, min(settings.youtube_api_timeout_seconds, 7)),
-            ) as response:
-                if getattr(response, "status", 200) >= 400:
-                    continue
-                content = response.read(2 * 1024 * 1024)
+            try:
+                with urllib.request.urlopen(
+                    request,
+                    # Keep the resolver bounded so it cannot consume the whole
+                    # inspection window before yt-dlp gets a chance to run.
+                    timeout=max(1, min(settings.youtube_api_timeout_seconds, 5)),
+                ) as response:
+                    if getattr(response, "status", 200) >= 400:
+                        continue
+                    content = response.read(2 * 1024 * 1024)
+            except urllib.error.HTTPError as api_error:
+                # Some resolver deployments return a transient 5xx to the
+                # default Python TLS client while accepting a browser-like
+                # request. Retry only server errors, once, using curl-cffi's
+                # Chrome impersonation when available. If it also fails, the
+                # normal yt-dlp fallback below still runs.
+                if api_error.code < 500 or curl_requests is None:
+                    raise
+                response = curl_requests.get(
+                    endpoint,
+                    impersonate="chrome",
+                    timeout=max(2, min(settings.youtube_api_timeout_seconds, 5)),
+                    headers={
+                        "Accept": "application/json,text/plain;q=0.9,*/*;q=0.8",
+                        "Accept-Language": "en-US,en;q=0.9",
+                        "Referer": "https://www.youtube.com/",
+                    },
+                )
+                if response.status_code >= 400:
+                    raise urllib.error.HTTPError(
+                        endpoint, response.status_code,
+                        f"browser-style resolver retry returned HTTP {response.status_code}",
+                        response.headers, None,
+                    )
+                content = response.content[: 2 * 1024 * 1024]
 
             payload = json.loads(content.decode("utf-8", "replace"))
             found.clear()
@@ -3041,6 +3069,14 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
                 )
             try:
                 opts = dict(profile)
+                # Bound each player-client attempt by the remaining overall
+                # YouTube inspection budget. Otherwise the resolver plus
+                # several per-client socket timeouts can outlive Telegram's
+                # 45-second inspection window and leave a confusing timeout.
+                if extraction_deadline is not None:
+                    remaining = max(2, int(extraction_deadline - time.monotonic()))
+                    opts["timeout"] = min(int(opts.get("timeout") or remaining), remaining)
+                    opts["socket_timeout"] = min(int(opts.get("socket_timeout") or remaining), remaining)
                 opts["noplaylist"] = True
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(candidate, download=False)
