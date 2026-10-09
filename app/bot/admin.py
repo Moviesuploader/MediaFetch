@@ -113,7 +113,7 @@ def _runtime_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
-async def _render_home(message, edit: bool = True) -> None:
+async def _render_home(message, edit: bool = True):
     stats = await asyncio.to_thread(storage.stats)
     limits = await asyncio.to_thread(storage.file_limits)
     channels = await asyncio.to_thread(storage.channel_config)
@@ -511,7 +511,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             "📢 <b>Broadcast</b>\n\n"
             "Ab jo message broadcast karna hai woh send/forward karo.\n"
             "Text, photo, video, document etc. supported.\n\n"
-            "Review ke baad <b>Confirm & Send</b> hoga.",
+            "Review ke baad <b>Confirm & Send</b> hoga. Source message ko broadcast review complete hone tak chat mein rehne do.",
             parse_mode="HTML", reply_markup=_back_keyboard())
         return
 
@@ -551,8 +551,9 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     if action == "cookies":
+        _PENDING_ADMIN_ACTIONS[uid] = "cookies_import"
         await query.message.edit_text(
-            "🍪 <b>YouTube Cookies</b>\n\ncookies.txt send karke <code>/cookies</code> se import karo.",
+            "🍪 <b>YouTube Cookies</b>\n\nNetscape-format <code>cookies.txt</code> ko document ke roop mein bhejo. Import hone ke baad input message delete ho jayega.",
             parse_mode="HTML", reply_markup=_back_keyboard())
         return
 
@@ -597,6 +598,40 @@ async def admin_message_router(update: Update, context: ContextTypes.DEFAULT_TYP
                 [InlineKeyboardButton("📡 Log Channels", callback_data="mfa:channels"),
                  InlineKeyboardButton("🏠 Main Panel", callback_data="mfa:home")]
             ]))
+        return
+
+    if action == "cookies_import":
+        source = message.document
+        if not source:
+            await _panel_edit(context, uid, "⚠️ <code>cookies.txt</code> ko document ke roop mein bhejo.", _back_keyboard())
+            return
+        filename = (source.file_name or "").lower()
+        if not (filename.endswith(".txt") or filename.endswith(".cookies")):
+            await _panel_edit(context, uid, "⚠️ File ka extension .txt ya .cookies hona chahiye.", _back_keyboard())
+            return
+        target = Path(settings.ytdlp_cookies_file)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tg_file = await context.bot.get_file(source.file_id)
+            await tg_file.download_to_drive(custom_path=str(target))
+            raw = target.read_text(encoding="utf-8", errors="replace")
+            rows = [line.strip() for line in raw.splitlines() if line.strip()]
+            if not any(line in {"# HTTP Cookie File", "# Netscape HTTP Cookie File"} for line in rows[:5]):
+                target.unlink(missing_ok=True)
+                await _panel_edit(context, uid, "⚠️ Invalid Netscape cookies.txt format.", _back_keyboard())
+                return
+            valid = sum(1 for line in raw.splitlines() if line.strip() and not line.lstrip().startswith("#") and len(line.split("\t")) >= 7)
+            if valid == 0 or target.stat().st_size > 5 * 1024 * 1024:
+                target.unlink(missing_ok=True)
+                await _panel_edit(context, uid, "⚠️ Cookie file empty/invalid hai ya 5 MB se badi hai.", _back_keyboard())
+                return
+            _PENDING_ADMIN_ACTIONS.pop(uid, None)
+            await _swallow(message)
+            await _panel_edit(context, uid, f"🍪 <b>Cookies imported.</b> Entries: <b>{valid}</b>", _back_keyboard())
+        except Exception as exc:
+            target.unlink(missing_ok=True)
+            logger.warning("Panel cookie import failed user=%s error_type=%s", uid, type(exc).__name__)
+            await _panel_edit(context, uid, "❌ Cookie import failed. File format check karke dobara bhejo.", _back_keyboard())
         return
 
     if action == "tasklimit":
