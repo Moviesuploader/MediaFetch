@@ -334,7 +334,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if action == "grant_plan":
         parts = (message.text or "").strip().split()
         if len(parts) != 3 or not parts[0].isdigit() or parts[1].lower() not in {"bronze", "platinum", "diamond"} or not parts[2].isdigit():
-            await message.reply_text("⚠️ Format: <code>USER_ID bronze|platinum|diamond DAYS</code>", parse_mode="HTML")
+            await _panel_edit(context, uid, "⚠️ Format: <code>USER_ID bronze|platinum|diamond DAYS</code>. Dobara bhejo.", _back_keyboard())
             return
         user_id = int(parts[0])
         plan = parts[1].lower()
@@ -343,37 +343,31 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         _PENDING_ADMIN_ACTIONS.pop(uid, None)
         date = datetime.fromtimestamp(expires, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         labels = {"bronze": "🥉 Bronze", "platinum": "💎 Platinum", "diamond": "💎 Diamond"}
-        await message.reply_text(
-            f"✅ {labels[plan]} granted to <code>{user_id}</code> until <b>{date}</b>.",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("👥 Plan Management", callback_data="mfa:plans"),
-                 InlineKeyboardButton("🏠 Main Panel", callback_data="mfa:home")]
-            ]),
-        )
+        await _swallow(message)
+        await _panel_edit(context, uid, f"✅ {labels[plan]} granted to <code>{user_id}</code> until <b>{date}</b>.", InlineKeyboardMarkup([
+            [InlineKeyboardButton("👥 Plan Management", callback_data="mfa:plans"),
+             InlineKeyboardButton("🏠 Main Panel", callback_data="mfa:home")]
+        ]))
         return
 
     if action == "revoke_plan":
         value = (message.text or "").strip()
         if not value.isdigit():
-            await message.reply_text("⚠️ Send a numeric Telegram user ID.")
+            await _panel_edit(context, uid, "⚠️ Numeric Telegram user ID bhejo.", _back_keyboard())
             return
         await asyncio.to_thread(storage.set_plan, int(value), "free", 0)
         _PENDING_ADMIN_ACTIONS.pop(uid, None)
-        await message.reply_text(
-            f"✅ Plan revoked for <code>{value}</code>. User is back on Free.",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("👥 Plan Management", callback_data="mfa:plans"),
-                 InlineKeyboardButton("🏠 Main Panel", callback_data="mfa:home")]
-            ]),
-        )
+        await _swallow(message)
+        await _panel_edit(context, uid, f"✅ Plan revoked for <code>{value}</code>. User is back on Free.", InlineKeyboardMarkup([
+            [InlineKeyboardButton("👥 Plan Management", callback_data="mfa:plans"),
+             InlineKeyboardButton("🏠 Main Panel", callback_data="mfa:home")]
+        ]))
         return
 
     if action == "payment_config":
         parts = (message.text or "").strip().split()
         if len(parts) not in {5, 7} or not all(x.isdigit() for x in parts[1:]):
-            await message.reply_text("⚠️ Format: <code>UPI_ID BRONZE_PRICE BRONZE_DAYS PLATINUM_PRICE PLATINUM_DAYS DIAMOND_PRICE DIAMOND_DAYS</code>", parse_mode="HTML")
+            await _panel_edit(context, uid, "⚠️ Format: <code>UPI_ID BRONZE_PRICE BRONZE_DAYS PLATINUM_PRICE PLATINUM_DAYS DIAMOND_PRICE DIAMOND_DAYS</code>. Dobara bhejo.", _back_keyboard())
             return
         if len(parts) == 7:
             values = {"upi_id": parts[0], "bronze_price": int(parts[1]), "bronze_duration_days": int(parts[2]), "platinum_price": int(parts[3]), "platinum_duration_days": int(parts[4]), "diamond_price": int(parts[5]), "diamond_duration_days": int(parts[6]), "duration_days": 30, "currency": "INR"}
@@ -381,11 +375,12 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             values = {"upi_id": parts[0], "bronze_price": int(parts[1]), "platinum_price": int(parts[2]), "diamond_price": int(parts[3]), "duration_days": int(parts[4]), "bronze_duration_days": int(parts[4]), "platinum_duration_days": int(parts[4]), "diamond_duration_days": int(parts[4]), "currency": "INR"}
         durations = [values["bronze_duration_days"], values["platinum_duration_days"], values["diamond_duration_days"]]
         if min(values["bronze_price"], values["platinum_price"], values["diamond_price"]) <= 0 or any(days < 1 or days > 3650 for days in durations):
-            await message.reply_text("⚠️ Prices > 0 aur har plan ki duration 1–3650 days honi chahiye.")
+            await _panel_edit(context, uid, "⚠️ Prices > 0 aur har plan ki duration 1–3650 days honi chahiye. Dobara bhejo.", _back_keyboard())
             return
         await asyncio.to_thread(storage.set_payment_settings, values)
         _PENDING_ADMIN_ACTIONS.pop(uid, None)
-        await message.reply_text("✅ <b>Payment settings saved.</b>\n\n📱 UPI: <code>%s</code>\n🥉 %s INR • 💎 %s INR • 💎 %s INR\n⏳ %s days" % (values["upi_id"], values["bronze_price"], values["platinum_price"], values["diamond_price"], values["duration_days"]), parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💳 Payments", callback_data="mfa:payments")]]))
+        await _swallow(message)
+        await _panel_edit(context, uid, "✅ <b>Payment settings saved.</b>\n\n📱 UPI: <code>%s</code>\n🥉 %s INR • 💎 %s INR • 💎 %s INR\n⏳ %s days" % (values["upi_id"], values["bronze_price"], values["platinum_price"], values["diamond_price"], values["duration_days"]), InlineKeyboardMarkup([[InlineKeyboardButton("💳 Payments", callback_data="mfa:payments")]]))
         return
 
     if action == "tasklimit":
@@ -547,20 +542,19 @@ async def admin_message_router(update: Update, context: ContextTypes.DEFAULT_TYP
         origin = getattr(message, "forward_origin", None)
         chat = getattr(origin, "chat", None)
         if not chat:
-            await message.reply_text(
-                "⚠️ Channel detect nahi hua. Please target channel ka actual message forward karo.",
-                reply_markup=_back_keyboard())
+            await _panel_edit(context, uid, "⚠️ Channel detect nahi hua. Target channel ka actual message forward karo.", _back_keyboard())
             return
         kind = "dump" if action == "set_dump" else "links"
         await asyncio.to_thread(storage.set_channel_config, kind, chat.id)
         _PENDING_ADMIN_ACTIONS.pop(uid, None)
         label = "Dump" if kind == "dump" else "Links Log"
-        await message.reply_text(
+        await _swallow(message)
+        await _panel_edit(
+            context, uid,
             f"✅ <b>{label} channel configured.</b>\n\n"
             f"Channel: <b>{chat.title or chat.username or chat.id}</b>\nID: <code>{chat.id}</code>\n\n"
             "Bot ko target channel me admin/post permission do.",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([
+            InlineKeyboardMarkup([
                 [InlineKeyboardButton("📡 Log Channels", callback_data="mfa:channels"),
                  InlineKeyboardButton("🏠 Main Panel", callback_data="mfa:home")]
             ]))
@@ -569,13 +563,12 @@ async def admin_message_router(update: Update, context: ContextTypes.DEFAULT_TYP
     if action == "tasklimit":
         value = (message.text or "").strip()
         if not value.isdigit() or not 1 <= int(value) <= 20:
-            await message.reply_text("⚠️ Task limit <b>1–20</b> hona chahiye.", parse_mode="HTML")
+            await _panel_edit(context, uid, "⚠️ Task limit 1–20 hona chahiye. Correct number dobara bhejo.", _back_keyboard())
             return
         limit = await asyncio.to_thread(storage.set_concurrent_download_limit, int(value))
         _PENDING_ADMIN_ACTIONS.pop(uid, None)
-        await message.reply_text(
-            f"✅ <b>Concurrent download limit set to {limit}.</b>",
-            parse_mode="HTML", reply_markup=_runtime_keyboard())
+        await _swallow(message)
+        await _panel_edit(context, uid, f"✅ <b>Concurrent download limit set to {limit}.</b>", _runtime_keyboard())
         return
 
     if action == "broadcast":
