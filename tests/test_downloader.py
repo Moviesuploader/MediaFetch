@@ -213,6 +213,41 @@ class DownloaderRoutingTests(unittest.TestCase):
             )
         self.assertIsNone(result)
 
+    def test_youtube_api_retries_server_error_with_browser_tls(self):
+        import urllib.error
+        import app.downloader.service as service
+
+        class FakeResponse:
+            status_code = 200
+            content = (
+                b'{"formats":[{"quality":"720p",'
+                b'"url":"https://cdn.example/video.mp4",'
+                b'"height":720,"vcodec":"h264","acodec":"aac"}]}'
+            )
+            headers = {}
+
+        class FakeCurl:
+            @staticmethod
+            def get(*args, **kwargs):
+                return FakeResponse()
+
+        with (
+            patch.object(service.settings, "youtube_api_enabled", True),
+            patch.object(service.settings, "youtube_api_url", "https://resolver.example/api"),
+            patch.object(
+                service.urllib.request,
+                "urlopen",
+                side_effect=urllib.error.HTTPError("https://resolver.example/api", 500, "server error", {}, None),
+            ),
+            patch.object(service, "curl_requests", FakeCurl),
+        ):
+            result = service._youtube_api_fallback("https://youtu.be/dQw4w9WgXcQ")
+
+        self.assertIsNotNone(result)
+        info, _, _ = result
+        self.assertTrue(info["_mediafetch_youtube_api"])
+        self.assertEqual(info["formats"][0]["height"], 720)
+
     def test_youtube_api_rejects_generic_json_url_without_media_signal(self):
         import app.downloader.service as service
 
