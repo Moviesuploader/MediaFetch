@@ -119,11 +119,19 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     uid = update.effective_user.id if update.effective_user else None
     if not query or not query.message:
         return
-    if not _is_owner(uid) or not _private(update):
+    action = query.data.split(":", 1)[1] if query.data else ""
+    is_private = _private(update)
+    group_id = str(getattr(settings, "payment_approval_chat_id", "") or "").strip()
+    chat_id = str(query.message.chat_id)
+    allowed_group_payment_action = (
+        bool(group_id)
+        and chat_id == group_id
+        and action.startswith(("payapprove:", "payreject:"))
+    )
+    if not _is_owner(uid) or (not is_private and not allowed_group_payment_action):
         await query.answer("Owner only.", show_alert=True)
         return
     await query.answer()
-    action = query.data.split(":", 1)[1] if query.data else ""
 
     if action in {"cancel", "home"}:
         _PENDING_ADMIN_ACTIONS.pop(uid, None)
