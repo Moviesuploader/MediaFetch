@@ -875,7 +875,7 @@ async def payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await query.edit_message_text(status_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💎 Premium Plans", callback_data="mfp:plans")]]))
         return
     if query.data == "mfp:supported":
-        await query.edit_message_text("🌐 <b>Supported platforms</b>\n\n" + SUPPORTED_TEXT, parse_mode="HTML)
+        await query.edit_message_text("🌐 <b>Supported platforms</b>\n\n" + SUPPORTED_TEXT, parse_mode="HTML")
         return
     if query.data == "mfp:help":
         await query.edit_message_text("🛠 <b>How to use MediaFetch</b>\n\n1. Send a public media URL.\n2. Choose quality.\n3. Wait for download and upload.\n\nCommands: /start /help /supported /about /premium /plans /history", parse_mode="HTML")
