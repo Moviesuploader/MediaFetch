@@ -1,4 +1,5 @@
 fastapi>=0.115,<1
+httpx>=0.27,<1
 uvicorn[standard]>=0.30,<1
 python-telegram-bot>=21.7,<22
 yt-dlp[default,curl-cffi]==2026.9.16.232951.dev0
