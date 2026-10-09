@@ -87,6 +87,8 @@ class Settings(BaseSettings):
     # ADMIN_IDS can contain different people for admin-level access.
     # Kept empty by default so deployments must explicitly configure the owner.
     owner_id: str = ""
+    # Optional group/chat ID where manual payment approval requests are posted.
+    payment_approval_chat_id: str = ""
     free_daily_limit: int = 10
     premium_daily_limit: int = 100
     bronze_daily_limit: int = 30
