@@ -253,7 +253,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         try:
             doc = await asyncio.to_thread(storage.reject_payment, payment_id, uid)
         except ValueError as exc:
-            await query.message.edit_text(f"⚠️ {exc}", reply_markup=_back_keyboard())
+            await _edit_payment_message(query.message, f"⚠️ {exc}", reply_markup=_back_keyboard())
             return
         try:
             await context.bot.send_message(chat_id=int(doc["user_id"]), text="❌ <b>Payment rejected.</b>\nPlease contact the owner if this is unexpected.", parse_mode="HTML")
@@ -364,6 +364,31 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         ]))
         return
 
+    if action == "file_limit":
+        parts = (message.text or "").strip().lower().split()
+        if len(parts) != 2 or parts[0] not in {"free", "bronze", "platinum", "diamond", "admin"} or not parts[1].isdigit():
+            await _panel_edit(context, uid, "⚠️ Format: <code>free|bronze|platinum|diamond|admin MB</code>. Dobara bhejo.", _back_keyboard())
+            return
+        role, mb = parts[0], int(parts[1])
+        if (role == "admin" and not 0 <= mb <= 100000) or (role != "admin" and not 1 <= mb <= 100000):
+            await _panel_edit(context, uid, "⚠️ Admin limit 0–100000 MB; baaki plans 1–100000 MB hone chahiye.", _back_keyboard())
+            return
+        limits = await asyncio.to_thread(storage.set_file_limit, role, mb)
+        _PENDING_ADMIN_ACTIONS.pop(uid, None)
+        await _swallow(message)
+        await _panel_edit(
+            context, uid,
+            f"✅ <b>{role.title()} limit updated.</b>\n\n"
+            f"Free: <b>{limits['free']} MB</b> • Bronze: <b>{limits['bronze']} MB</b>\n"
+            f"Platinum: <b>{limits['platinum']} MB</b> • Diamond: <b>{limits['diamond']} MB</b>\n"
+            f"Admin/Owner: <b>{'Unlimited' if limits['admin'] == 0 else str(limits['admin']) + ' MB'}</b>",
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("📦 Plan Limits", callback_data="mfa:filelimits"),
+                 InlineKeyboardButton("🏠 Main Panel", callback_data="mfa:home")]
+            ]),
+        )
+        return
+
     if action == "payment_config":
         parts = (message.text or "").strip().split()
         if len(parts) not in {5, 7} or not all(x.isdigit() for x in parts[1:]):
@@ -398,7 +423,21 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"🆓 Free: <b>{limits['free']} MB</b>\n🥉 Bronze: <b>{limits['bronze']} MB</b>\n"
             f"💎 Platinum: <b>{limits['platinum']} MB</b>\n💎 Diamond: <b>{limits['diamond']} MB</b>\n"
             "👑 Admin/Owner: <b>Unlimited</b>\n\n"
-            "Change limits: <code>/set_limit free|bronze|platinum|diamond MB</code>.",
+            "Use the button below to update a limit.",
+            parse_mode="HTML", reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✏️ Change a limit", callback_data="mfa:filelimit")],
+                [InlineKeyboardButton("🔙 Back", callback_data="mfa:runtime"),
+                 InlineKeyboardButton("❌ Close", callback_data="mfa:close")]
+            ]))
+        return
+
+    if action == "filelimit":
+        _PENDING_ADMIN_ACTIONS[uid] = "file_limit"
+        await query.message.edit_text(
+            "📦 <b>Change Plan Limit</b>\n\n"
+            "Send one line: <code>free|bronze|platinum|diamond|admin MB</code>\n"
+            "Example: <code>platinum 1500</code>\n"
+            "Admin limit: <code>0</code> means unlimited.",
             parse_mode="HTML", reply_markup=_back_keyboard())
         return
 
