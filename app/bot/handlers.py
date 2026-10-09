@@ -854,7 +854,7 @@ async def payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     text = (
         f"💳 <b>{PLAN_LABELS[plan]} Payment</b>\n\n"
         f"💰 Amount: <b>{cfg['prices'][plan]} {cfg['currency']}</b>\n"
-        f"⏳ Duration: <b>{cfg['duration_days']} days</b>\n"
+        f"⏳ Duration: <b>{cfg['durations'][plan]} days</b>\n"
         f"📱 UPI ID: <code>{html.escape(cfg['upi_id'])}</code>\n\n"
         "1️⃣ UPI app se exact amount pay karo.\n"
         "2️⃣ Payment ke baad UTR / transaction reference copy karo.\n"
