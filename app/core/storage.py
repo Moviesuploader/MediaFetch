@@ -274,12 +274,14 @@ class Storage:
                 self._payment_settings = dict(clean)
         return clean
 
-    def create_payment(self, payment_id: str, user_id: int, plan: str, amount: int, currency: str, utr: str, duration_days: int = 30) -> dict[str, Any]:
+    def create_payment(self, payment_id: str, user_id: int, plan: str, amount: int, currency: str, utr: str, duration_days: int = 30, provider: str = "manual", gateway_order_id: str = "", payment_session_id: str = "") -> dict[str, Any]:
         doc = {
             "payment_id": payment_id, "user_id": int(user_id), "plan": plan,
             "amount": int(amount), "currency": currency, "utr": utr,
             "status": "pending", "duration_days": max(1, int(duration_days)), "created_at": datetime.now(timezone.utc),
             "verified_at": None, "verified_by": None, "subscription_until": None,
+            "provider": str(provider or "manual"), "gateway_order_id": str(gateway_order_id or ""),
+            "payment_session_id": str(payment_session_id or ""),
         }
         if self._db is not None:
             if self._db.payments.find_one({"utr": utr}):
@@ -300,20 +302,37 @@ class Storage:
             item = getattr(self, "_payments", {}).get(payment_id)
             return dict(item) if item else None
 
+    def payment_by_gateway_order(self, order_id: str) -> dict[str, Any] | None:
+        if self._db is not None:
+            return self._db.payments.find_one({"gateway_order_id": order_id, "provider": "cashfree"}, {"_id": 0})
+        with self._lock:
+            for item in getattr(self, "_payments", {}).values():
+                if item.get("provider") == "cashfree" and item.get("gateway_order_id") == order_id:
+                    return dict(item)
+        return None
+
     def pending_payments(self, limit: int = 20) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 100))
         if self._db is not None:
-            return list(self._db.payments.find({"status": "pending"}, {"_id": 0}).sort("created_at", -1).limit(limit))
+            return list(self._db.payments.find({"status": "pending", "provider": {"$ne": "cashfree"}}, {"_id": 0}).sort("created_at", -1).limit(limit))
         with self._lock:
-            items = [dict(v) for v in getattr(self, "_payments", {}).values() if v.get("status") == "pending"]
+            items = [dict(v) for v in getattr(self, "_payments", {}).values() if v.get("status") == "pending" and v.get("provider") != "cashfree"]
             return sorted(items, key=lambda x: str(x.get("created_at", "")), reverse=True)[:limit]
 
     def payment_stats(self) -> dict[str, int]:
         if self._db is not None:
-            return {status: int(self._db.payments.count_documents({"status": status})) for status in ("pending", "approved", "rejected")}
+            return {
+                "pending": int(self._db.payments.count_documents({"status": "pending", "provider": {"$ne": "cashfree"}})),
+                "approved": int(self._db.payments.count_documents({"status": "approved"})),
+                "rejected": int(self._db.payments.count_documents({"status": "rejected"})),
+            }
         with self._lock:
             items = list(getattr(self, "_payments", {}).values())
-            return {status: sum(1 for x in items if x.get("status") == status) for status in ("pending", "approved", "rejected")}
+            return {
+                "pending": sum(1 for x in items if x.get("status") == "pending" and x.get("provider") != "cashfree"),
+                "approved": sum(1 for x in items if x.get("status") == "approved"),
+                "rejected": sum(1 for x in items if x.get("status") == "rejected"),
+            }
 
     def approve_payment(self, payment_id: str, verified_by: int, days: int) -> dict[str, Any]:
         days = max(1, int(days))
