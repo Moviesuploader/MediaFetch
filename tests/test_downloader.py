@@ -131,8 +131,9 @@ class DownloaderRoutingTests(unittest.TestCase):
             patch.object(service, "_facebook_authenticated_photo_fallback", side_effect=AssertionError("video share must not use photo fallback")),
             patch.object(service, "_meta_public_page_fallback", return_value=None),
         ):
-            with self.assertRaises(Exception):
+            with self.assertRaises(Exception) as caught:
                 _extract_with_fallback("https://www.facebook.com/share/v/ABC123/")
+            self.assertNotIsInstance(caught.exception, UnboundLocalError)
 
     def test_threads_uses_secondary_fallbacks_when_crawler_misses(self):
         import app.downloader.service as service
