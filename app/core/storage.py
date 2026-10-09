@@ -24,6 +24,7 @@ class Storage:
         self._premium: dict[int, float] = {}
         self._plans: dict[int, dict[str, Any]] = {}
         self._users: set[int] = set()
+        self._user_panels: dict[int, dict[str, int]] = {}
         self._stats = {"downloads": 0, "cache_hits": 0, "failures": 0, "bytes": 0}
         self._payment_settings: dict[str, Any] = {}
         self._history: dict[int, list[dict[str, Any]]] = {}
@@ -128,6 +129,41 @@ class Storage:
         else:
             with self._lock:
                 self._users.add(user_id)
+
+    def set_user_panel(self, user_id: int, chat_id: int, message_id: int) -> None:
+        """Persist the user's single navigation-panel location across restarts."""
+        panel = {"user_id": int(user_id), "panel_chat_id": int(chat_id), "panel_message_id": int(message_id)}
+        if self._db is not None:
+            self._db.users.update_one({"user_id": int(user_id)}, {"$set": panel}, upsert=True)
+            return
+        with self._lock:
+            self._users.add(int(user_id))
+            self._user_panels[int(user_id)] = {"chat_id": int(chat_id), "message_id": int(message_id)}
+
+    def get_user_panel(self, user_id: int, chat_id: int | None = None) -> dict[str, int] | None:
+        """Return a saved panel, optionally only when it belongs to this chat."""
+        if self._db is not None:
+            doc = self._db.users.find_one({"user_id": int(user_id)}, {"panel_chat_id": 1, "panel_message_id": 1}) or {}
+            saved_chat = int(doc.get("panel_chat_id", 0) or 0)
+            saved_message = int(doc.get("panel_message_id", 0) or 0)
+        else:
+            with self._lock:
+                doc = self._user_panels.get(int(user_id), {})
+                saved_chat = int(doc.get("chat_id", 0) or 0)
+                saved_message = int(doc.get("message_id", 0) or 0)
+        if not saved_chat or not saved_message or (chat_id is not None and saved_chat != int(chat_id)):
+            return None
+        return {"chat_id": saved_chat, "message_id": saved_message}
+
+    def clear_user_panel(self, user_id: int) -> None:
+        if self._db is not None:
+            self._db.users.update_one(
+                {"user_id": int(user_id)},
+                {"$unset": {"panel_chat_id": "", "panel_message_id": ""}},
+            )
+            return
+        with self._lock:
+            self._user_panels.pop(int(user_id), None)
 
     def user_ids(self) -> list[int]:
         if self._db is not None:
