@@ -9,6 +9,7 @@ import mimetypes
 import time
 import logging
 import subprocess
+import shutil
 import threading
 import urllib.request
 import urllib.error
@@ -3787,14 +3788,17 @@ def _download_sync(
     if platform == "youtube" and mode != "audio":
         # Prefer Telegram-friendly MP4/H.264 + M4A audio so YouTube videos
         # are delivered as native streaming videos, not generic documents.
+        # On small ephemeral hosts, prefer a single-file progressive MP4
+        # before separate video/audio streams. This avoids a large temporary
+        # merge and reduces peak disk usage; split-stream formats remain fallback.
         if mode == "best":
-            selector = "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b"
+            selector = "b[ext=mp4]/bv*[ext=mp4]+ba[ext=m4a]/b/bv*+ba/b"
         elif mode.endswith("p") and mode[:-1].isdigit():
             height = int(mode[:-1])
             selector = (
-                f"bv*[ext=mp4][height<={height}]+ba[ext=m4a]/"
                 f"b[ext=mp4][height<={height}]/"
-                f"bv*[height<={height}]+ba/b[height<={height}]/best[height<={height}]"
+                f"bv*[ext=mp4][height<={height}]+ba[ext=m4a]/"
+                f"b[height<={height}]/bv*[height<={height}]+ba/b[height<={height}]/best[height<={height}]"
             )
     if platform == "facebook" and mode != "audio":
         if mode == "best":
@@ -3813,6 +3817,9 @@ def _download_sync(
             "format": selector or "best",
             "noplaylist": True,
             "merge_output_format": "mp4",
+            # Avoid yt-dlp's extra faststart rewrite pass, which can require
+            # another full-size temporary MP4 on low-storage instances.
+            "fixup": "never",
             **({"max_filesize": max_file_mb * 1024 * 1024} if max_file_mb > 0 else {}),
             "progress_hooks": [],
         }
@@ -3963,6 +3970,7 @@ def _download_sync(
                 opts["format"] = selector or "bv+ba/b[vcodec!=none][ext=mp4]/b[vcodec!=none]"
             opts["noplaylist"] = True
             opts["merge_output_format"] = "mp4"
+            opts["fixup"] = "never"
             if max_file_mb > 0:
                 opts["max_filesize"] = max_file_mb * 1024 * 1024
             else:
@@ -4042,7 +4050,28 @@ def _download_sync(
         # reuse an audio-only requested format, which is why YouTube was being
         # returned as M4A even for "Best" video mode.
         with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([selected_url])
+            try:
+                ydl.download([selected_url])
+            except Exception:
+                try:
+                    disk = shutil.disk_usage(output_dir)
+                    logger.exception(
+                        "yt-dlp download/postprocessing failed platform=%s mode=%s "
+                        "disk_total_mb=%d disk_used_mb=%d disk_free_mb=%d",
+                        platform,
+                        mode,
+                        disk.total // (1024 * 1024),
+                        disk.used // (1024 * 1024),
+                        disk.free // (1024 * 1024),
+                    )
+                except OSError:
+                    logger.exception(
+                        "yt-dlp download/postprocessing failed platform=%s mode=%s; "
+                        "disk usage could not be read",
+                        platform,
+                        mode,
+                    )
+                raise
 
             expected = Path(ydl.prepare_filename(info))
             if mode == "audio":
