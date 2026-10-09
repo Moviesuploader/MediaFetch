@@ -166,7 +166,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if action == "paypending":
         items = await asyncio.to_thread(storage.pending_payments, 20)
         rows = [[InlineKeyboardButton(
-            f"{x.get('payment_id')} • {PLAN_LABELS.get(x.get('plan'), x.get('plan'))} • {x.get('amount')} {x.get('currency')}",
+            f"{str(x.get('user_name') or ('@' + x.get('username') if x.get('username') else x.get('user_id', 'User')))} • {PLAN_LABELS.get(x.get('plan'), x.get('plan'))} • {x.get('amount')} {x.get('currency')}",
             callback_data=f"mfa:payview:{x.get('payment_id')}"
         )] for x in items]
         rows.append([InlineKeyboardButton("🔙 Back", callback_data="mfa:payments")])
