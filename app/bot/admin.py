@@ -265,11 +265,22 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
         expires = float(doc.get("subscription_until") or 0)
         date = datetime.fromtimestamp(expires, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        user_status_text = f"✅ <b>Payment approved!</b>\\n\\n📦 Plan: <b>{PLAN_LABELS.get(doc.get('plan'), doc.get('plan'))}</b>\\n⏳ Active until: <b>{date}</b>"
+        updated_user_status = False
         try:
-            await context.bot.send_message(chat_id=int(doc["user_id"]), text=f"✅ <b>Payment approved!</b>\n\n📦 Plan: <b>{PLAN_LABELS.get(doc.get('plan'), doc.get('plan'))}</b>\n⏳ Active until: <b>{date}</b>", parse_mode="HTML")
-        except Exception:
-            logger.warning("Could not notify approved payment id=%s", payment_id)
-        await _edit_payment_message(query.message, payment_summary(doc) + f"\n\n✅ <b>Approved</b>\n⏳ Active until: <b>{date}</b>", reply_markup=None)
+            chat_id = int(doc.get("status_chat_id") or doc["user_id"])
+            message_id = int(doc.get("status_message_id") or 0)
+            if message_id:
+                await context.bot.edit_message_caption(chat_id=chat_id, message_id=message_id, caption=user_status_text, parse_mode="HTML", reply_markup=None)
+                updated_user_status = True
+        except Exception as exc:
+            logger.info("Could not edit user payment status id=%s error_type=%s", payment_id, type(exc).__name__)
+        if not updated_user_status:
+            try:
+                await context.bot.send_message(chat_id=int(doc["user_id"]), text=user_status_text, parse_mode="HTML")
+            except Exception:
+                logger.warning("Could not notify approved payment id=%s", payment_id)
+        await _edit_payment_message(query.message, payment_summary(doc) + f"\\n\\n✅ <b>Approved</b>\\n⏳ Active until: <b>{date}</b>", reply_markup=None)
         return
 
     if action.startswith("payreject:"):
@@ -279,11 +290,22 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except ValueError as exc:
             await _edit_payment_message(query.message, f"⚠️ {exc}", reply_markup=_back_keyboard())
             return
+        user_status_text = "❌ <b>Payment rejected.</b>\\nPlease contact the owner if this is unexpected."
+        updated_user_status = False
         try:
-            await context.bot.send_message(chat_id=int(doc["user_id"]), text="❌ <b>Payment rejected.</b>\nPlease contact the owner if this is unexpected.", parse_mode="HTML")
-        except Exception:
-            logger.warning("Could not notify rejected payment id=%s", payment_id)
-        await _edit_payment_message(query.message, payment_summary(doc) + "\n\n❌ <b>Rejected</b>", reply_markup=None)
+            chat_id = int(doc.get("status_chat_id") or doc["user_id"])
+            message_id = int(doc.get("status_message_id") or 0)
+            if message_id:
+                await context.bot.edit_message_caption(chat_id=chat_id, message_id=message_id, caption=user_status_text, parse_mode="HTML", reply_markup=None)
+                updated_user_status = True
+        except Exception as exc:
+            logger.info("Could not edit user payment status id=%s error_type=%s", payment_id, type(exc).__name__)
+        if not updated_user_status:
+            try:
+                await context.bot.send_message(chat_id=int(doc["user_id"]), text=user_status_text, parse_mode="HTML")
+            except Exception:
+                logger.warning("Could not notify rejected payment id=%s", payment_id)
+        await _edit_payment_message(query.message, payment_summary(doc) + "\\n\\n❌ <b>Rejected</b>", reply_markup=None)
         return
 
     if action == "payconfig":
