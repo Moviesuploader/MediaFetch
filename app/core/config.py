@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     dump_channel_id: str = ""
     links_log_channel_id: str = ""
 
-    # Comma-separated platforms allowed to use imported general cookies.
+    # Comma-separated platforms allowed to use the general cookie jar.
     ytdlp_cookie_platforms: str = "youtube"
     ytdlp_max_retries: int = 1
     extraction_timeout_seconds: int = 30
@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     platinum_daily_limit: int = 75
     diamond_daily_limit: int = 150
 
-    # Optional manual UPI fallback. Keep payment identifiers out of source defaults.
+    # Manual UPI/UTR approval is the default payment flow.
     payment_upi_id: str = ""
     payment_currency: str = "INR"
     bronze_price: int = 29
@@ -106,7 +106,8 @@ class Settings(BaseSettings):
     payment_duration_days: int = 30
     payment_qr_url: str = ""
 
-    # Cashfree hosted checkout. Credentials belong only in the hosting environment.
+    # Gateway is opt-in only. Keep disabled until merchant KYC/API setup is complete.
+    cashfree_enabled: bool = False
     cashfree_app_id: str = ""
     cashfree_secret_key: str = ""
     cashfree_environment: str = "sandbox"
