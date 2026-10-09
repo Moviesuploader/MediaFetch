@@ -232,9 +232,28 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await query.message.edit_text(
                 details_text, parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🖼 View screenshot", callback_data=f"mfa:payproof:{payment_id}")],
                     [InlineKeyboardButton("✅ Approve", callback_data=f"mfa:payapprove:{payment_id}"), InlineKeyboardButton("❌ Reject", callback_data=f"mfa:payreject:{payment_id}")],
                     [InlineKeyboardButton("🔙 Pending", callback_data="mfa:paypending")]
                 ]))
+        return
+
+    if action.startswith("payproof:"):
+        payment_id = action.split(":", 1)[1]
+        doc = await asyncio.to_thread(storage.payment_by_id, payment_id)
+        if not doc or not doc.get("screenshot_file_id"):
+            await query.message.reply_text("⚠️ Payment screenshot not available.")
+            return
+        buttons = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Approve", callback_data=f"mfa:payapprove:{payment_id}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"mfa:payreject:{payment_id}"),
+        ]])
+        await context.bot.send_photo(
+            chat_id=query.message.chat_id,
+            photo=doc["screenshot_file_id"],
+            caption=payment_summary(doc) + "\n\n⚠️ Verify payment in UPI/bank app before action.",
+            parse_mode="HTML", reply_markup=buttons,
+        )
         return
 
     if action.startswith("payapprove:"):
