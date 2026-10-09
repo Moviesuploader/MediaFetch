@@ -16,7 +16,12 @@ logger = logging.getLogger("mediafetch.cashfree")
 
 
 def configured() -> bool:
-    return bool(settings.cashfree_app_id.strip() and settings.cashfree_secret_key.strip())
+    # Payment gateway is explicitly opt-in; manual UPI approval stays the default.
+    return bool(
+        getattr(settings, "cashfree_enabled", False)
+        and settings.cashfree_app_id.strip()
+        and settings.cashfree_secret_key.strip()
+    )
 
 
 def api_base_url() -> str:
@@ -69,7 +74,7 @@ async def create_order(
     plan: str,
 ) -> dict[str, Any]:
     if not configured():
-        raise RuntimeError("Cashfree is not configured. Set CASHFREE_APP_ID and CASHFREE_SECRET_KEY.")
+        raise RuntimeError("Cashfree is not enabled or configured.")
     base_url = public_base_url()
     if not base_url:
         raise RuntimeError("Set PUBLIC_BASE_URL or KOYEB_PUBLIC_DOMAIN to enable Cashfree checkout.")
@@ -104,7 +109,7 @@ async def create_order(
 
 async def fetch_order(order_id: str) -> dict[str, Any]:
     if not configured():
-        raise RuntimeError("Cashfree is not configured.")
+        raise RuntimeError("Cashfree is not enabled or configured.")
     async with httpx.AsyncClient(timeout=15.0) as client:
         response = await client.get(
             f"{api_base_url()}/orders/{quote(order_id, safe='')}",
