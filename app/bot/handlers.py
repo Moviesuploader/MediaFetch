@@ -11,7 +11,7 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlsplit
 
 from telegram.error import BadRequest
 from telegram import InputFile, InputMediaPhoto, InputMediaVideo, InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -71,7 +71,7 @@ def _prepare_source_thumbnail(
     candidates: list[str] = []
     if source_url:
         video_id = None
-        parts = urllib.parse.urlsplit(source_url)
+        parts = urlsplit(source_url)
         host = parts.netloc.lower().removeprefix("www.")
         if host == "youtu.be":
             video_id = parts.path.strip("/").split("/", 1)[0]
