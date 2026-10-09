@@ -19,7 +19,15 @@ def test_cashfree_webhook_signature_verification(monkeypatch):
     assert not cashfree.verify_webhook_signature(raw, timestamp, "invalid")
 
 
-def test_cashfree_configuration_requires_both_keys(monkeypatch):
+def test_cashfree_is_disabled_by_default_even_if_keys_exist(monkeypatch):
+    monkeypatch.setattr(settings, "cashfree_enabled", False)
+    monkeypatch.setattr(settings, "cashfree_app_id", "test-app")
+    monkeypatch.setattr(settings, "cashfree_secret_key", "test-secret")
+    assert not cashfree.configured()
+
+
+def test_cashfree_requires_opt_in_and_both_keys(monkeypatch):
+    monkeypatch.setattr(settings, "cashfree_enabled", True)
     monkeypatch.setattr(settings, "cashfree_app_id", "test-app")
     monkeypatch.setattr(settings, "cashfree_secret_key", "")
     assert not cashfree.configured()
