@@ -27,7 +27,7 @@ def _owner_id() -> int | None:
             return int(str(settings.owner_id).strip())
         except ValueError:
             return None
-    return next(iter(sorted(settings.admin_id_set)), None)
+    return None
 
 
 def _is_owner(user_id: int | None) -> bool:
@@ -146,7 +146,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"🥉 Bronze: <b>{cfg['prices']['bronze']} {cfg['currency']}</b>\n"
             f"💎 Platinum: <b>{cfg['prices']['platinum']} {cfg['currency']}</b>\n"
             f"💎 Diamond: <b>{cfg['prices']['diamond']} {cfg['currency']}</b>\n"
-            f"⏳ Duration: <b>{cfg['duration_days']} days</b>",
+            f"⏳ Durations: <b>Bronze {cfg['durations']['bronze']}d • Platinum {cfg['durations']['platinum']}d • Diamond {cfg['durations']['diamond']}d</b>",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🟡 Pending Payments", callback_data="mfa:paypending")],
@@ -215,7 +215,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if action == "payconfig":
         _PENDING_ADMIN_ACTIONS[uid] = "payment_config"
         await query.message.edit_text(
-            "⚙️ <b>Payment Configuration</b>\n\nSend:\n<code>UPI_ID BRONZE PLATINUM DIAMOND DAYS</code>\n\nExample: <code>name@upi 49 99 149 30</code>\nUTR manually verify hoga; koi gateway nahi.",
+            "⚙️ <b>Payment Configuration</b>\n\nSend:\n<code>UPI_ID BRONZE_PRICE BRONZE_DAYS PLATINUM_PRICE PLATINUM_DAYS DIAMOND_PRICE DIAMOND_DAYS</code>\n\nExample: <code>name@upi 29 7 79 30 149 30</code>\nUTR manually verify hoga; koi gateway nahi.",
             parse_mode="HTML", reply_markup=_back_keyboard())
         return
 
