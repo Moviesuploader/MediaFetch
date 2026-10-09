@@ -39,7 +39,7 @@ def valid_utr(utr: str) -> bool:
     return bool(_UTR_RE.fullmatch(utr.strip()))
 
 
-def create_payment(user_id: int, plan: str, utr: str, *, screenshot_file_id: str = "", user_name: str = "", username: str = "") -> dict[str, Any]:
+def create_payment(user_id: int, plan: str, utr: str, *, screenshot_file_id: str = "", user_name: str = "", username: str = "", status_chat_id: int | str = 0, status_message_id: int | str = 0) -> dict[str, Any]:
     plan = plan.lower().strip()
     utr = utr.strip()
     cfg = payment_config()
@@ -61,6 +61,8 @@ def create_payment(user_id: int, plan: str, utr: str, *, screenshot_file_id: str
         screenshot_file_id=screenshot_file_id,
         user_name=user_name,
         username=username,
+        status_chat_id=status_chat_id,
+        status_message_id=status_message_id,
     )
 
 
