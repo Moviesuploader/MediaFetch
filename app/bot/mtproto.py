@@ -91,14 +91,50 @@ class MTProtoUploader:
 
     async def stop(self) -> None:
         async with self._lock:
-            if self.client is not None:
-                try:
-                    await self.client.stop()
-                except Exception:
-                    logger.exception("MTProto uploader shutdown failed.")
-            self.client = None
-            self.me = None
-            self.ready = False
+            await self._stop_unlocked()
+
+    async def _stop_unlocked(self) -> None:
+        client, self.client = self.client, None
+        self.me = None
+        self.ready = False
+        if client is not None:
+            try:
+                await client.stop()
+            except Exception:
+                logger.warning("MTProto uploader shutdown encountered a stale transport.", exc_info=True)
+
+    async def reconnect(self) -> bool:
+        """Rebuild a stale Pyrogram transport without exposing session secrets."""
+        if not self.configured:
+            return False
+        async with self._lock:
+            await self._stop_unlocked()
+            try:
+                from pyrogram import Client
+
+                client = Client(
+                    "mediafetch_uploader",
+                    api_id=settings.api_id,
+                    api_hash=settings.api_hash,
+                    session_string=settings.user_session_string,
+                    in_memory=True,
+                    no_updates=True,
+                )
+                self.client = client
+                await client.start()
+                me = await client.get_me()
+                if not me or getattr(me, "is_bot", False):
+                    await self._stop_unlocked()
+                    logger.error("MTProto reconnect rejected: session is not a user account.")
+                    return False
+                self.me = me
+                self.ready = True
+                logger.info("MTProto uploader transport reconnected.")
+                return True
+            except Exception:
+                await self._stop_unlocked()
+                logger.warning("MTProto uploader reconnect failed.", exc_info=True)
+                return False
 
     @property
     def account_is_premium(self) -> bool:
@@ -193,10 +229,22 @@ class MTProtoUploader:
             # the MTProto account must have access to the bridge channel.
             try:
                 await self.client.get_chat(destination)
-            except Exception as exc:
-                raise LargeUploadError(
-                    f"MTProto bridge peer is unavailable: {exc}"
-                ) from exc
+            except Exception as first_exc:
+                # A closed TCPTransport can leave ready=True while the
+                # underlying Pyrogram session is dead. Reconnect once, then
+                # resolve the peer again before starting any upload (avoids
+                # blindly retrying a send that might already have succeeded).
+                logger.warning("MTProto peer lookup failed; rebuilding transport once: %s", first_exc)
+                if not await self.reconnect():
+                    raise LargeUploadError(
+                        f"MTProto connection is unavailable and reconnect failed: {first_exc}"
+                    ) from first_exc
+                try:
+                    await self.client.get_chat(destination)
+                except Exception as second_exc:
+                    raise LargeUploadError(
+                        f"MTProto bridge peer is unavailable after reconnect: {second_exc}"
+                    ) from second_exc
             # Preserve MP4 videos as real Telegram videos instead of
             # documents. This is important because the Bot API copy step
             # preserves the media type of the bridge message.
