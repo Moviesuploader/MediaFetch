@@ -1007,7 +1007,7 @@ async def _handle_payment_utr(update: Update, context: ContextTypes.DEFAULT_TYPE
             return True
         draft["utr"] = utr
         draft["step"] = "confirm"
-        await _show_payment_proof_review(message, draft)
+        await _show_payment_proof_review(message, draft, context)
         try:
             await message.delete()
         except Exception:
@@ -1038,27 +1038,53 @@ async def _handle_payment_utr(update: Update, context: ContextTypes.DEFAULT_TYPE
     return True
 
 
-async def _show_payment_proof_review(message, draft: dict[str, str]) -> None:
+async def _show_payment_proof_review(message, draft: dict[str, str], context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
     plan = draft["plan"]
     cfg = payment_config()
-    await message.reply_photo(
-        photo=draft["screenshot_file_id"],
-        caption=(
-            "🔎 <b>Confirm payment details</b>\n\n"
-            f"📦 Plan: <b>{PLAN_LABELS[plan]}</b>\n"
-            f"💰 Amount: <b>{cfg['prices'][plan]} {cfg['currency']}</b>\n"
-            f"🔢 UTR: <code>{html.escape(draft['utr'])}</code>\n"
-            "📎 Screenshot attached\n\n"
-            "Details check karo. Confirm karne par request owner PM + configured group mein jayegi."
-        ),
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Confirm & Submit", callback_data="mfp:proofconfirm"),
-             InlineKeyboardButton("✏️ Re-edit UTR", callback_data="mfp:proofeditutr")],
-            [InlineKeyboardButton("🖼 Replace Screenshot", callback_data="mfp:proofreplace"),
-             InlineKeyboardButton("❌ Cancel", callback_data="mfp:proofcancel")],
-        ]),
+    caption = (
+        "🔎 <b>Confirm payment details</b>\n\n"
+        f"📦 Plan: <b>{PLAN_LABELS[plan]}</b>\n"
+        f"💰 Amount: <b>{cfg['prices'][plan]} {cfg['currency']}</b>\n"
+        f"🔢 UTR: <code>{html.escape(draft['utr'])}</code>\n"
+        "📎 Screenshot attached\n\n"
+        "Details check karo. Confirm karne par request owner PM + configured group mein jayegi."
     )
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Confirm & Submit", callback_data="mfp:proofconfirm"),
+         InlineKeyboardButton("✏️ Re-edit UTR", callback_data="mfp:proofeditutr")],
+        [InlineKeyboardButton("🖼 Replace Screenshot", callback_data="mfp:proofreplace"),
+         InlineKeyboardButton("❌ Cancel", callback_data="mfp:proofcancel")],
+    ])
+    if context and draft.get("review_chat_id") and draft.get("review_message_id"):
+        try:
+            await context.bot.edit_message_media(
+                chat_id=int(draft["review_chat_id"]),
+                message_id=int(draft["review_message_id"]),
+                media=InputMediaPhoto(
+                    media=draft["screenshot_file_id"],
+                    caption=caption,
+                    parse_mode="HTML",
+                ),
+                reply_markup=markup,
+            )
+            return
+        except Exception as exc:
+            logger.warning("Payment review panel update failed error_type=%s", type(exc).__name__)
+            try:
+                await context.bot.edit_message_caption(
+                    chat_id=int(draft["review_chat_id"]),
+                    message_id=int(draft["review_message_id"]),
+                    caption=caption, parse_mode="HTML", reply_markup=markup,
+                )
+                return
+            except Exception:
+                pass
+    sent = await message.reply_photo(
+        photo=draft["screenshot_file_id"], caption=caption,
+        parse_mode="HTML", reply_markup=markup,
+    )
+    draft["review_chat_id"] = str(sent.chat_id)
+    draft["review_message_id"] = str(sent.message_id)
 
 
 async def payment_proof_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
