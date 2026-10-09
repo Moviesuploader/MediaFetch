@@ -2,10 +2,13 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from telegram import Update
 
 from app.bot.application import build_application
 from app.core.config import settings
+from app.core import cashfree
+from app.core.storage import storage
 from app.bot.mtproto import mtproto_uploader
 
 logger = logging.getLogger("mediafetch")
@@ -123,6 +126,111 @@ async def health() -> dict[str, str]:
         "service": "MediaFetch",
         "telegram_mode": "webhook" if settings.webhook_mode else "polling",
     }
+
+
+async def _verify_and_activate_cashfree_order(order_id: str) -> str:
+    record = await __import__("asyncio").to_thread(storage.payment_by_gateway_order, order_id)
+    if not record:
+        logger.warning("Cashfree event references unknown order_id")
+        return "unknown"
+    order = await cashfree.fetch_order(order_id)
+    if str(order.get("order_status", "")).upper() != "PAID":
+        return "pending"
+    try:
+        amount_matches = round(float(order.get("order_amount", -1)), 2) == round(float(record.get("amount", -2)), 2)
+    except (TypeError, ValueError):
+        amount_matches = False
+    currency_matches = str(order.get("order_currency", "")).upper() == str(record.get("currency", "INR")).upper()
+    if not amount_matches or not currency_matches:
+        logger.error("Cashfree order amount/currency mismatch; refusing activation")
+        return "mismatch"
+    try:
+        approved = await __import__("asyncio").to_thread(
+            storage.approve_payment,
+            str(record["payment_id"]),
+            0,
+            int(record.get("duration_days", 30)),
+        )
+    except ValueError:
+        current = await __import__("asyncio").to_thread(storage.payment_by_id, str(record["payment_id"]))
+        return "already_paid" if current and current.get("status") == "approved" else "pending"
+    try:
+        bot = getattr(app.state, "bot", None)
+        if bot:
+            from app.core.payments import PLAN_LABELS
+            await bot.bot.send_message(
+                chat_id=int(approved["user_id"]),
+                text=(
+                    "✅ <b>Payment verified automatically!</b>\n\n"
+                    f"📦 Plan: <b>{PLAN_LABELS.get(str(approved.get('plan')), str(approved.get('plan')).title())}</b>\n"
+                    f"💰 Paid: <b>₹{approved.get('amount')}</b>\n"
+                    f"⏳ Validity: <b>{approved.get('duration_days')} days</b>\n\n"
+                    "Premium is active now. Use /premium to check your plan."
+                ),
+                parse_mode="HTML",
+            )
+    except Exception:
+        logger.exception("Cashfree payment confirmation message failed")
+    logger.info("Cashfree order verified and premium activated")
+    return "paid"
+
+
+@app.get("/cashfree/checkout/{order_id}", response_class=HTMLResponse)
+async def cashfree_checkout(order_id: str) -> HTMLResponse:
+    if not cashfree.configured():
+        raise HTTPException(status_code=503, detail="Cashfree checkout is not configured.")
+    record = await __import__("asyncio").to_thread(storage.payment_by_gateway_order, order_id)
+    if not record or record.get("provider") != "cashfree" or not record.get("payment_session_id"):
+        raise HTTPException(status_code=404, detail="Checkout not found or expired.")
+    if record.get("status") != "pending":
+        raise HTTPException(status_code=409, detail="This payment is no longer pending.")
+    return HTMLResponse(cashfree.checkout_html(str(record["payment_session_id"]))
+
+
+@app.get("/cashfree/return", response_class=HTMLResponse)
+async def cashfree_return(order_id: str = "") -> HTMLResponse:
+    if not order_id:
+        raise HTTPException(status_code=400, detail="Missing order ID.")
+    try:
+        result = await _verify_and_activate_cashfree_order(order_id)
+    except Exception:
+        logger.exception("Cashfree return status verification failed")
+        result = "pending"
+    if result in {"paid", "already_paid"}:
+        message = "Payment verified. Your MediaFetch Premium plan is active. You can return to Telegram."
+    else:
+        message = "Payment status is not confirmed yet. Return to Telegram and check /premium shortly; do not pay again while the transaction is pending."
+    return HTMLResponse(
+        "<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>MediaFetch payment status</title></head><body style='font-family:system-ui;max-width:520px;margin:50px auto;padding:20px'>"
+        "<h2>MediaFetch payment status</h2><p>" + message + "</p></body></html>"
+    )
+
+
+@app.post("/cashfree/webhook")
+async def cashfree_webhook(
+    request: Request,
+    x_webhook_signature: str | None = Header(default=None),
+    x_webhook_timestamp: str | None = Header(default=None),
+) -> dict[str, bool]:
+    if not cashfree.configured():
+        raise HTTPException(status_code=503, detail="Cashfree webhook is not configured.")
+    raw_body = await request.body()
+    if not cashfree.verify_webhook_signature(raw_body, x_webhook_timestamp or "", x_webhook_signature or ""):
+        logger.warning("Rejected Cashfree webhook: invalid signature")
+        raise HTTPException(status_code=401, detail="Invalid webhook signature.")
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid webhook payload.") from exc
+    data = payload.get("data") or {}
+    order = data.get("order") or {}
+    order_id = str(order.get("order_id") or data.get("order_id") or "").strip()
+    if not order_id:
+        logger.info("Cashfree webhook ignored: event has no order ID")
+        return {"ok": True}
+    await _verify_and_activate_cashfree_order(order_id)
+    return {"ok": True}
 
 
 @app.post("/telegram/webhook")
