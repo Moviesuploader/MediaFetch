@@ -35,6 +35,7 @@ _ACTIVE_JOBS: dict[tuple[int, str], tuple[asyncio.Task, threading.Event]] = {}
 _ACTIVE_LOCK = asyncio.Lock()
 _PENDING_REQUESTS: dict[int, tuple[str, str, str, MediaInfo | None, str | None, object | None]] = {}
 _PENDING_PAYMENT_PLAN: dict[int, str] = {}
+_PENDING_PAYMENT_MESSAGES: dict[int, dict[str, str]] = {}
 _PENDING_PAYMENT_PROOF: dict[int, dict[str, str]] = {}
 _PENDING_CASHFREE_PLAN: dict[int, str] = {}
 _PENDING_LOCK = asyncio.Lock()
@@ -825,7 +826,7 @@ async def _send_dynamic_upi_qr(message, plan: str, amount: int, currency: str, u
         image.save(buffer, format="PNG")
         buffer.seek(0)
         buffer.name = f"mediafetch-{plan}-upi-qr.png"
-        await message.reply_photo(
+        return await message.reply_photo(
             photo=InputFile(buffer, filename=buffer.name),
             caption=(
                 f"📲 <b>Scan to pay</b>\n"
@@ -858,7 +859,7 @@ async def payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             lines.append(f"{PLAN_LABELS[tier]} — ₹{price} / {days} days • {limits[tier]} MB/file")
             if price > 0 and cfg["upi_id"]:
                 rows.append([InlineKeyboardButton(f"Buy {PLAN_LABELS[tier]} • ₹{price}", callback_data=f"mfp:buy:{tier}")])
-        await query.edit_message_text("\\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(rows) if rows else None)
+        await query.edit_message_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(rows) if rows else None)
         return
     if query.data == "mfp:status":
         info = await asyncio.to_thread(storage.plan_info, update.effective_user.id)
@@ -868,16 +869,16 @@ async def payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if info.get("active"):
             from datetime import datetime, timezone
             until = datetime.fromtimestamp(float(info["until"]), tz=timezone.utc).strftime("%d %b %Y, %H:%M UTC")
-            status_text = f"👤 <b>Your Plan</b>\\n\\n📦 {tier.title()} • {limits.get(tier, limits['free'])} MB/file\\n⏳ Expires: {until}\\n📥 Today: {used}/{storage.daily_limit(update.effective_user.id)}"
+            status_text = f"👤 <b>Your Plan</b>\n\n📦 {tier.title()} • {limits.get(tier, limits['free'])} MB/file\n⏳ Expires: {until}\n📥 Today: {used}/{storage.daily_limit(update.effective_user.id)}"
         else:
-            status_text = f"👤 <b>Your Plan</b>\\n\\n🆓 Free • {limits['free']} MB/file\\n📥 Today: {used}/{settings.free_daily_limit}"
+            status_text = f"👤 <b>Your Plan</b>\n\n🆓 Free • {limits['free']} MB/file\n📥 Today: {used}/{settings.free_daily_limit}
         await query.edit_message_text(status_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💎 Premium Plans", callback_data="mfp:plans")]]))
         return
     if query.data == "mfp:supported":
-        await query.edit_message_text("🌐 <b>Supported platforms</b>\\n\\n" + SUPPORTED_TEXT, parse_mode="HTML")
+        await query.edit_message_text("🌐 <b>Supported platforms</b>\n\n" + SUPPORTED_TEXT, parse_mode="HTML)
         return
     if query.data == "mfp:help":
-        await query.edit_message_text("🛠 <b>How to use MediaFetch</b>\\n\\n1. Send a public media URL.\\n2. Choose quality.\\n3. Wait for download and upload.\\n\\nCommands: /start /help /supported /about /premium /plans /history", parse_mode="HTML")
+        await query.edit_message_text("🛠 <b>How to use MediaFetch</b>\n\n1. Send a public media URL.\n2. Choose quality.\n3. Wait for download and upload.\n\nCommands: /start /help /supported /about /premium /plans /history", parse_mode="HTML")
         return
     parts = (query.data or "").split(":")
     if len(parts) != 3 or parts[0] != "mfp" or parts[1] != "buy":
@@ -919,13 +920,14 @@ async def payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         "⚠️ UTR submit karna payment proof nahi hai. Plan owner verification ke baad hi activate hoga."
     )
     await query.edit_message_text(text, parse_mode="HTML")
-    await _send_dynamic_upi_qr(
-        query.message,
-        plan,
-        int(cfg["prices"][plan]),
-        cfg["currency"],
-        cfg["upi_id"],
+    qr_message = await _send_dynamic_upi_qr(
+        query.message, plan, int(cfg["prices"][plan]), cfg["currency"], cfg["upi_id"],
     )
+    _PENDING_PAYMENT_MESSAGES[user_id] = {
+        "chat_id": str(query.message.chat_id),
+        "instructions_message_id": str(query.message.message_id),
+        "qr_message_id": str(qr_message.message_id) if qr_message else "",
+    }
 
 
 async def cashfree_contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1020,8 +1022,10 @@ async def _handle_payment_utr(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not valid_utr(utr):
         await message.reply_text("⚠️ Invalid UTR/reference. Please send the transaction reference only.")
         return True
+    message_refs = _PENDING_PAYMENT_MESSAGES.get(user_id, {})
     _PENDING_PAYMENT_PROOF[user_id] = {
         "plan": plan, "utr": utr, "screenshot_file_id": "", "step": "waiting_photo",
+        **message_refs,
     }
     await message.reply_text(
         "📎 <b>Payment screenshot bhejo</b>\n\n"
@@ -1147,12 +1151,21 @@ async def payment_proof_callback(update: Update, context: ContextTypes.DEFAULT_T
         doc = await asyncio.to_thread(
             create_payment, user.id, plan, utr,
             screenshot_file_id=screenshot, user_name=name, username=username,
+            status_chat_id=query.message.chat_id, status_message_id=query.message.message_id,
         )
     except ValueError as exc:
         await query.edit_message_caption(caption=f"⚠️ {html.escape(str(exc))}", parse_mode="HTML")
         return
     _PENDING_PAYMENT_PROOF.pop(user.id, None)
     _PENDING_PAYMENT_PLAN.pop(user.id, None)
+    _PENDING_PAYMENT_MESSAGES.pop(user.id, None)
+    for key in ("instructions_message_id", "qr_message_id"):
+        try:
+            message_id = int(draft.get(key, "0"))
+            if message_id:
+                await context.bot.delete_message(chat_id=int(draft.get("chat_id", query.message.chat_id)), message_id=message_id)
+        except Exception:
+            pass
     group_markup = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Approve", callback_data=f"mfa:payapprove:{doc['payment_id']}"),
         InlineKeyboardButton("❌ Reject", callback_data=f"mfa:payreject:{doc['payment_id']}"),
