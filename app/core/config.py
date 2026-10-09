@@ -89,9 +89,9 @@ class Settings(BaseSettings):
     owner_id: str = ""
     free_daily_limit: int = 10
     premium_daily_limit: int = 100
-    bronze_daily_limit: int = 100
-    platinum_daily_limit: int = 100
-    diamond_daily_limit: int = 100
+    bronze_daily_limit: int = 30
+    platinum_daily_limit: int = 75
+    diamond_daily_limit: int = 150
 
     # Gateway-less manual UPI payments. Prices are configurable via environment.
     payment_upi_id: str = "2001aashish@yescred"
