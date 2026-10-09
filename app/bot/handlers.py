@@ -1007,11 +1007,11 @@ async def _handle_payment_utr(update: Update, context: ContextTypes.DEFAULT_TYPE
             return True
         draft["utr"] = utr
         draft["step"] = "confirm"
+        await _show_payment_proof_review(message, draft)
         try:
             await message.delete()
         except Exception:
             pass
-        await _show_payment_proof_review(message, draft)
         return True
 
     plan = _PENDING_PAYMENT_PLAN.get(user_id)
@@ -1023,10 +1023,6 @@ async def _handle_payment_utr(update: Update, context: ContextTypes.DEFAULT_TYPE
     _PENDING_PAYMENT_PROOF[user_id] = {
         "plan": plan, "utr": utr, "screenshot_file_id": "", "step": "waiting_photo",
     }
-    try:
-        await message.delete()
-    except Exception:
-        pass
     await message.reply_text(
         "📎 <b>Payment screenshot bhejo</b>\n\n"
         f"📦 Plan: <b>{PLAN_LABELS[plan]}</b>\n"
@@ -1035,6 +1031,10 @@ async def _handle_payment_utr(update: Update, context: ContextTypes.DEFAULT_TYPE
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="mfp:proofcancel")]]),
     )
+    try:
+        await message.delete()
+    except Exception:
+        pass
     return True
 
 
@@ -1070,11 +1070,11 @@ async def payment_proof_photo_handler(update: Update, context: ContextTypes.DEFA
         return
     draft["screenshot_file_id"] = message.photo[-1].file_id
     draft["step"] = "confirm"
+    await _show_payment_proof_review(message, draft)
     try:
         await message.delete()
     except Exception:
         pass
-    await _show_payment_proof_review(message, draft)
 
 
 async def payment_proof_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
