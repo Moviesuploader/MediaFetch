@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import html
 import secrets
 import time
 from datetime import datetime, timezone
@@ -38,7 +39,7 @@ def valid_utr(utr: str) -> bool:
     return bool(_UTR_RE.fullmatch(utr.strip()))
 
 
-def create_payment(user_id: int, plan: str, utr: str) -> dict[str, Any]:
+def create_payment(user_id: int, plan: str, utr: str, *, screenshot_file_id: str = "", user_name: str = "", username: str = "") -> dict[str, Any]:
     plan = plan.lower().strip()
     utr = utr.strip()
     cfg = payment_config()
@@ -57,6 +58,9 @@ def create_payment(user_id: int, plan: str, utr: str) -> dict[str, Any]:
         currency=cfg["currency"],
         utr=utr,
         duration_days=int(cfg["durations"][plan]),
+        screenshot_file_id=screenshot_file_id,
+        user_name=user_name,
+        username=username,
     )
 
 
@@ -77,10 +81,11 @@ def payment_summary(doc: dict[str, Any]) -> str:
     label = PLAN_LABELS.get(str(doc.get("plan")), str(doc.get("plan", "")).title())
     return (
         f"💳 <b>Payment {doc.get('payment_id', '—')}</b>\n\n"
-        f"👤 User: <code>{doc.get('user_id', '—')}</code>\n"
+        f"👤 User: <a href=\"tg://user?id={doc.get('user_id', '')}\">{html.escape(str(doc.get('user_name') or doc.get('username') or doc.get('user_id', '—')))}</a> (<code>{doc.get('user_id', '—')}</code>)\n"
         f"📦 Plan: <b>{label}</b>\n"
         f"💰 Amount: <b>{doc.get('amount', 0)} {doc.get('currency', 'INR')}</b>\n"
         + (f"🔗 Cashfree order: <code>{doc.get('gateway_order_id', '—')}</code>\n" if doc.get("provider") == "cashfree" else f"🔢 UTR: <code>{doc.get('utr', '—')}</code>\n")
+        + ("📎 Screenshot: <b>Attached</b>\n" if doc.get("screenshot_file_id") else "📎 Screenshot: <b>Not attached</b>\n")
         + f"📌 Status: <b>{str(doc.get('status', 'pending')).upper()}</b>\n"
         + f"🕒 Created: <code>{format_payment_time(doc.get('created_at'))}</code>"
     )
