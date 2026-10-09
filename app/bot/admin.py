@@ -168,7 +168,12 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if action in {"cancel", "home"}:
         _PENDING_ADMIN_ACTIONS.pop(uid, None)
-        _PENDING_BROADCASTS.pop(uid, None)
+        source = _PENDING_BROADCASTS.pop(uid, None)
+        if source:
+            try:
+                await context.bot.delete_message(chat_id=source[0], message_id=source[1])
+            except Exception:
+                pass
         await _render_home(query.message)
         return
     if action == "close":
@@ -506,7 +511,12 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if action == "broadcast":
         _PENDING_ADMIN_ACTIONS[uid] = "broadcast"
-        _PENDING_BROADCASTS.pop(uid, None)
+        previous = _PENDING_BROADCASTS.pop(uid, None)
+        if previous:
+            try:
+                await context.bot.delete_message(chat_id=previous[0], message_id=previous[1])
+            except Exception:
+                pass
         await query.message.edit_text(
             "📢 <b>Broadcast</b>\n\n"
             "Ab jo message broadcast karna hai woh send/forward karo.\n"
