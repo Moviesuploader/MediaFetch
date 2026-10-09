@@ -1083,7 +1083,6 @@ async def payment_proof_callback(update: Update, context: ContextTypes.DEFAULT_T
         return
     draft = _PENDING_PAYMENT_PROOF.get(user.id)
     action = (query.data or "").split(":", 1)[1]
-    await query.answer()
     if not draft:
         await query.edit_message_caption(caption="⌛ Payment draft expired. Please start payment again.", reply_markup=None)
         return
