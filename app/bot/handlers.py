@@ -894,6 +894,7 @@ async def payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             except Exception:
                 pass
         context.user_data.pop("mediafetch_user_panel_message_id", None)
+        await asyncio.to_thread(storage.clear_user_panel, update.effective_user.id)
         return
     if query.data == "mfp:home":
         try:
@@ -906,6 +907,7 @@ async def payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 ]),
             )
             context.user_data["mediafetch_user_panel_message_id"] = query.message.message_id
+            await asyncio.to_thread(storage.set_user_panel, update.effective_user.id, query.message.chat_id, query.message.message_id)
         except Exception:
             pass
         return
@@ -922,6 +924,7 @@ async def payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 rows.append([InlineKeyboardButton(f"Buy {PLAN_LABELS[tier]} • ₹{price}", callback_data=f"mfp:buy:{tier}")])
         await query.edit_message_text("\n".join(lines), parse_mode="HTML", reply_markup=_user_panel_keyboard(rows))
         context.user_data["mediafetch_user_panel_message_id"] = query.message.message_id
+            await asyncio.to_thread(storage.set_user_panel, update.effective_user.id, query.message.chat_id, query.message.message_id)
         return
     if query.data == "mfp:status":
         info = await asyncio.to_thread(storage.plan_info, update.effective_user.id)
@@ -936,14 +939,17 @@ async def payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             status_text = f"👤 <b>Your Plan</b>\n\n🆓 Free • {limits['free']} MB/file\n📥 Today: {used}/{settings.free_daily_limit}"
         await query.edit_message_text(status_text, parse_mode="HTML", reply_markup=_user_panel_keyboard([[InlineKeyboardButton("💎 Premium Plans", callback_data="mfp:plans")]]))
         context.user_data["mediafetch_user_panel_message_id"] = query.message.message_id
+            await asyncio.to_thread(storage.set_user_panel, update.effective_user.id, query.message.chat_id, query.message.message_id)
         return
     if query.data == "mfp:supported":
         await query.edit_message_text("🌐 <b>Supported platforms</b>\n\n" + SUPPORTED_TEXT, parse_mode="HTML", reply_markup=_user_panel_keyboard())
         context.user_data["mediafetch_user_panel_message_id"] = query.message.message_id
+            await asyncio.to_thread(storage.set_user_panel, update.effective_user.id, query.message.chat_id, query.message.message_id)
         return
     if query.data == "mfp:help":
         await query.edit_message_text("🛠 <b>How to use MediaFetch</b>\n\n1. Send a public media URL.\n2. Choose quality.\n3. Wait for download and upload.\n\nCommands: /start /help /supported /about /premium /plans /history", parse_mode="HTML", reply_markup=_user_panel_keyboard())
         context.user_data["mediafetch_user_panel_message_id"] = query.message.message_id
+            await asyncio.to_thread(storage.set_user_panel, update.effective_user.id, query.message.chat_id, query.message.message_id)
         return
     parts = (query.data or "").split(":")
     if len(parts) != 3 or parts[0] != "mfp" or parts[1] != "buy":
