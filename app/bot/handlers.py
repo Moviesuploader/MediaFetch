@@ -788,14 +788,15 @@ async def plans_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not update.message:
         return
     cfg = payment_config()
-    lines = ["💳 <b>MediaFetch Plans</b>", "", "Choose a plan to pay via UPI:"]
+    limits = storage.file_limits()
+    lines = ["💎 <b>MediaFetch Premium Plans</b>", "", "Choose a plan to pay via UPI:"]
     buttons = []
     for plan in PLANS:
         price = cfg["prices"][plan]
-        lines.append(f"{PLAN_LABELS[plan]} — <b>{price} {cfg['currency']}</b>" if price > 0 else f"{PLAN_LABELS[plan]} — <b>Not configured</b>")
-        if price > 0:
-            buttons.append([InlineKeyboardButton(f"{PLAN_LABELS[plan]} • {price} {cfg['currency']}", callback_data=f"mfp:buy:{plan}")])
-    lines.append(f"\n⏳ Duration: <b>{cfg['duration_days']} days</b>")
+        days = cfg["durations"][plan]
+        lines.append(f"{PLAN_LABELS[plan]} — <b>{price} {cfg['currency']}</b> • <b>{days} days</b> • <b>{limits[plan]} MB/file</b>" if price > 0 else f"{PLAN_LABELS[plan]} — <b>Not configured</b>")
+        if price > 0 and cfg["upi_id"]:
+            buttons.append([InlineKeyboardButton(f"{PLAN_LABELS[plan]} • ₹{price} / {days}d", callback_data=f"mfp:buy:{plan}")])
     if not cfg["upi_id"]:
         lines.append("\n⚠️ UPI payment is currently not configured.")
     await update.message.reply_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons) if buttons else None)
