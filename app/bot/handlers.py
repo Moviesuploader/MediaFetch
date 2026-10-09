@@ -841,6 +841,38 @@ async def payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if not query or not query.message or not update.effective_user:
         return
     await query.answer()
+    if query.data == "mfp:plans":
+        cfg = payment_config()
+        limits = storage.file_limits()
+        lines = ["💎 <b>MediaFetch Premium</b>", ""]
+        rows = []
+        for tier in PLANS:
+            price = cfg["prices"][tier]
+            days = cfg["durations"][tier]
+            lines.append(f"{PLAN_LABELS[tier]} — ₹{price} / {days} days • {limits[tier]} MB/file")
+            if price > 0 and cfg["upi_id"]:
+                rows.append([InlineKeyboardButton(f"Buy {PLAN_LABELS[tier]} • ₹{price}", callback_data=f"mfp:buy:{tier}")])
+        await query.edit_message_text("\\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(rows) if rows else None)
+        return
+    if query.data == "mfp:status":
+        info = await asyncio.to_thread(storage.plan_info, update.effective_user.id)
+        limits = storage.file_limits()
+        tier = info.get("plan", "free")
+        used = await asyncio.to_thread(storage.usage_today, update.effective_user.id)
+        if info.get("active"):
+            from datetime import datetime, timezone
+            until = datetime.fromtimestamp(float(info["until"]), tz=timezone.utc).strftime("%d %b %Y, %H:%M UTC")
+            status_text = f"👤 <b>Your Plan</b>\\n\\n📦 {tier.title()} • {limits.get(tier, limits['free'])} MB/file\\n⏳ Expires: {until}\\n📥 Today: {used}/{storage.daily_limit(update.effective_user.id)}"
+        else:
+            status_text = f"👤 <b>Your Plan</b>\\n\\n🆓 Free • {limits['free']} MB/file\\n📥 Today: {used}/{settings.free_daily_limit}"
+        await query.edit_message_text(status_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💎 Premium Plans", callback_data="mfp:plans")]]))
+        return
+    if query.data == "mfp:supported":
+        await query.edit_message_text("🌐 <b>Supported platforms</b>\\n\\n" + SUPPORTED_TEXT, parse_mode="HTML")
+        return
+    if query.data == "mfp:help":
+        await query.edit_message_text("🛠 <b>How to use MediaFetch</b>\\n\\n1. Send a public media URL.\\n2. Choose quality.\\n3. Wait for download and upload.\\n\\nCommands: /start /help /supported /about /premium /plans /history", parse_mode="HTML")
+        return
     parts = (query.data or "").split(":")
     if len(parts) != 3 or parts[0] != "mfp" or parts[1] != "buy":
         return
