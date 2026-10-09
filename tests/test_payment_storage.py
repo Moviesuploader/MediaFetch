@@ -51,5 +51,15 @@ class PaymentStorageTests(unittest.TestCase):
             self.store.approve_payment("PAYMENT1", verified_by=987654321, days=7)
 
 
+    def test_user_panel_reference_persists_and_clears(self) -> None:
+        self.store.set_user_panel(123456789, 123456789, 42)
+        self.assertEqual(
+            self.store.get_user_panel(123456789, 123456789),
+            {"chat_id": 123456789, "message_id": 42},
+        )
+        self.assertIsNone(self.store.get_user_panel(123456789, -100123))
+        self.store.clear_user_panel(123456789)
+        self.assertIsNone(self.store.get_user_panel(123456789, 123456789))
+
 if __name__ == "__main__":
     unittest.main()
