@@ -62,39 +62,79 @@ SUPPORTED_TEXT = (
 )
 
 
-def _prepare_source_thumbnail(thumbnail_url: str | None, path: Path) -> Path | None:
-    """Download and normalize a source thumbnail for Telegram video upload."""
-    if not isinstance(thumbnail_url, str) or not thumbnail_url.startswith(("http://", "https://")):
+def _prepare_source_thumbnail(
+    thumbnail_url: str | None,
+    path: Path,
+    source_url: str | None = None,
+) -> Path | None:
+    """Prefer a real YouTube poster and skip empty/black placeholder thumbnails."""
+    candidates: list[str] = []
+    if source_url:
+        video_id = None
+        parts = urllib.parse.urlsplit(source_url)
+        host = parts.netloc.lower().removeprefix("www.")
+        if host == "youtu.be":
+            video_id = parts.path.strip("/").split("/", 1)[0]
+        elif host.endswith("youtube.com"):
+            video_id = (
+                re.search(r"(?:^|[?&])v=([A-Za-z0-9_-]{6,})", parts.query)
+                or re.search(r"/(?:shorts|live)/([A-Za-z0-9_-]{6,})", parts.path)
+            )
+            video_id = video_id.group(1) if video_id else None
+        if video_id:
+            candidates.extend(
+                f"https://i.ytimg.com/vi/{video_id}/{name}.jpg"
+                for name in ("maxresdefault", "sddefault", "hqdefault", "mqdefault")
+            )
+    if isinstance(thumbnail_url, str) and thumbnail_url.startswith(("http://", "https://")):
+        if thumbnail_url not in candidates:
+            candidates.append(thumbnail_url)
+
+    if not candidates:
         return None
     target = path.with_name(f"{path.stem}-source-thumb.jpg")
-    try:
-        request = urllib.request.Request(thumbnail_url, headers={"User-Agent": "Mozilla/5.0", "Accept": "image/avif,image/webp,image/apng,image/jpeg,image/png,*/*;q=0.8"})
-        with urllib.request.urlopen(request, timeout=15) as response:
-            data = response.read(5 * 1024 * 1024 + 1)
-            content_type = (response.headers.get("Content-Type") or "").lower()
-        if not data or len(data) > 5 * 1024 * 1024 or not content_type.startswith("image/"):
-            return None
-        from PIL import Image, ImageOps
-        with Image.open(io.BytesIO(data)) as image:
-            image = ImageOps.exif_transpose(image).convert("RGB")
-            image.thumbnail((320, 320), Image.Resampling.LANCZOS)
-            image.save(target, format="JPEG", quality=88, optimize=True)
-        if target.stat().st_size > 190 * 1024:
-            with Image.open(target) as image:
-                for quality in (78, 68, 58):
-                    image.save(target, format="JPEG", quality=quality, optimize=True)
-                    if target.stat().st_size <= 190 * 1024:
-                        break
-        if target.stat().st_size > 200 * 1024:
+    for candidate_url in candidates:
+        try:
+            request = urllib.request.Request(
+                candidate_url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/146.0.0.0 Safari/537.36",
+                    "Accept": "image/avif,image/webp,image/apng,image/jpeg,image/png,*/*;q=0.8",
+                    "Referer": source_url or "https://www.youtube.com/",
+                },
+            )
+            with urllib.request.urlopen(request, timeout=12) as response:
+                data = response.read(5 * 1024 * 1024 + 1)
+                content_type = (response.headers.get("Content-Type") or "").lower()
+            if not data or len(data) > 5 * 1024 * 1024 or not content_type.startswith("image/"):
+                continue
+            from PIL import Image, ImageOps, ImageStat
+            with Image.open(io.BytesIO(data)) as image:
+                image = ImageOps.exif_transpose(image).convert("RGB")
+                # YouTube returns a black placeholder for unavailable maxres posters.
+                stats = ImageStat.Stat(image.resize((32, 32)))
+                if max(stats.stddev) < 3.0 and max(stats.mean) < 35:
+                    continue
+                image.thumbnail((320, 320), Image.Resampling.LANCZOS)
+                image.save(target, format="JPEG", quality=86, optimize=True)
+            if target.stat().st_size > 190 * 1024:
+                with Image.open(target) as image:
+                    for quality in (76, 66, 56):
+                        image.save(target, format="JPEG", quality=quality, optimize=True)
+                        if target.stat().st_size <= 190 * 1024:
+                            break
+            if target.stat().st_size <= 200 * 1024:
+                logger.info("Source thumbnail prepared candidate_host=%s", urllib.parse.urlsplit(candidate_url).netloc)
+                return target
             target.unlink(missing_ok=True)
-            return None
-        return target
-    except Exception as exc:
-        logger.info("Source thumbnail unavailable; using generated preview error_type=%s", type(exc).__name__)
-        try: target.unlink(missing_ok=True)
-        except OSError: pass
-        return None
-
+        except Exception as exc:
+            logger.debug("Thumbnail candidate unavailable host=%s error_type=%s", urllib.parse.urlsplit(candidate_url).netloc, type(exc).__name__)
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                pass
+    logger.info("No usable source thumbnail found; falling back to generated preview")
+    return None
 
 def _cache_key(url: str, mode: str) -> str:
     # v4 invalidates Instagram carousel cache created from cover/thumbnail fallbacks.
@@ -259,6 +299,7 @@ async def _send_media_message(
     upload_progress=None,
     cancel_event=None,
     thumbnail_url: str | None = None,
+    source_url: str | None = None,
 ):
     if file_id:
         if kind == "video":
@@ -293,7 +334,7 @@ async def _send_media_message(
             source_thumb_path = None
             generated_thumb_path = None
             try:
-                source_thumb_path = await asyncio.to_thread(_prepare_source_thumbnail, thumbnail_url, path)
+                source_thumb_path = await asyncio.to_thread(_prepare_source_thumbnail, thumbnail_url, path, source_url)
                 thumb_path = source_thumb_path
                 if thumb_path is None:
                     generated_thumb_path = path.with_name(f"{path.stem}-thumb.jpg")
@@ -1488,6 +1529,7 @@ async def _download_choice_worker(update: Update, context: ContextTypes.DEFAULT_
                         upload_progress=upload_progress,
                         cancel_event=cancel_event,
                         thumbnail_url=(info.thumbnail if isinstance(info, MediaInfo) and platform == "YouTube" else None),
+                        source_url=(url if platform == "YouTube" else None),
                     )
                     await upload_progress(
                         100,
