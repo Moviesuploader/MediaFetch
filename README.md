@@ -141,6 +141,10 @@ python run.py
 
 Local development defaults to Telegram long polling. Use webhook mode only with a public HTTPS endpoint.
 
+## Cashfree premium payments
+
+See [`CASHFREE_SETUP.md`](CASHFREE_SETUP.md) for Cashfree Sandbox/Production environment variables, webhook setup, end-to-end testing, and settlement/fee caveats. Payment credentials must only be set in Koyeb environment variables, never committed to Git.
+
 ## Tests
 
 ~~~bash
