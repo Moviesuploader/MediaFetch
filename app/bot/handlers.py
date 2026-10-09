@@ -667,13 +667,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if user:
         await asyncio.to_thread(storage.touch_user, user.id, user.username)
+    limits = storage.file_limits()
     await update.message.reply_text(
-        "👋 <b>Welcome to MediaFetch!</b>\n\n"
-        "Send a public media URL and choose the quality.\n"
-        "🎬 Video • 🎵 MP3 • 📸 HD photos • 🖼️ carousels\n"
-        f"🆓 Free: <b>{storage.file_limits()['free']} MB</b> • 🥉 Bronze: <b>{storage.file_limits()['bronze']} MB</b> • 💎 Platinum: <b>{storage.file_limits()['platinum']} MB</b> • 💎 Diamond: <b>{storage.file_limits()['diamond']} MB</b>\n\n"
-        "Use /help for commands.",
+        "⚡ <b>Welcome to MediaFetch</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+        "🔗 Send a public media link and choose your quality.\n"
+        "🎬 Video • 🎵 MP3 • 📸 HD Photos • 🖼️ Carousels\n\n"
+        "📦 <b>Plan file limits</b>\n"
+        f"🆓 Free: <b>{limits['free']} MB</b>\n"
+        f"🥉 Bronze: <b>{limits['bronze']} MB</b>\n"
+        f"💎 Platinum: <b>{limits['platinum']} MB</b>\n"
+        f"👑 Diamond: <b>{limits['diamond']} MB</b>\n\n"
+        "👇 Manage your plan or explore supported sites below.",
         parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("💎 Premium Plans", callback_data="mfp:plans"), InlineKeyboardButton("👤 My Plan", callback_data="mfp:status")],
+            [InlineKeyboardButton("🌐 Supported Sites", callback_data="mfp:supported"), InlineKeyboardButton("❓ Help", callback_data="mfp:help")],
+        ]),
     )
 
 
