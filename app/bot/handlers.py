@@ -1025,6 +1025,10 @@ async def _handle_payment_utr(update: Update, context: ContextTypes.DEFAULT_TYPE
                     f"🔢 UTR: <code>{html.escape(utr)}</code>"
                 ),
                 parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ Approve", callback_data=f"mfa:payapprove:{doc['payment_id']}"),
+                    InlineKeyboardButton("❌ Reject", callback_data=f"mfa:payreject:{doc['payment_id']}"),
+                ]]),
             )
         except Exception:
             logger.warning("Payment admin notification failed user=%s", user_id)
