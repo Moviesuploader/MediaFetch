@@ -3784,6 +3784,18 @@ def _download_sync(
 ) -> Path | list[Path]:
     selector = _quality_selector(mode)
     platform = _platform_from_url(url)
+    if platform == "youtube" and mode != "audio":
+        # Prefer Telegram-friendly MP4/H.264 + M4A audio so YouTube videos
+        # are delivered as native streaming videos, not generic documents.
+        if mode == "best":
+            selector = "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b"
+        elif mode.endswith("p") and mode[:-1].isdigit():
+            height = int(mode[:-1])
+            selector = (
+                f"bv*[ext=mp4][height<={height}]+ba[ext=m4a]/"
+                f"b[ext=mp4][height<={height}]/"
+                f"bv*[height<={height}]+ba/b[height<={height}]/best[height<={height}]"
+            )
     if platform == "facebook" and mode != "audio":
         if mode == "best":
             selector = "bv+ba/b[vcodec!=none][ext=mp4]/b[vcodec!=none]"
