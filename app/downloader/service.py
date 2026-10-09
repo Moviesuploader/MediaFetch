@@ -3100,9 +3100,6 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
                 if authenticated_photo:
                     logger.info("Facebook authenticated photo fallback succeeded url=%s", candidate)
                     return authenticated_photo
-            if authenticated_photo:
-                logger.info("Facebook authenticated photo fallback succeeded url=%s", candidate)
-                return authenticated_photo
 
         public_fallback = _meta_public_page_fallback(url)
         if public_fallback:
