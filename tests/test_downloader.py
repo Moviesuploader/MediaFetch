@@ -200,6 +200,19 @@ class DownloaderRoutingTests(unittest.TestCase):
         self.assertEqual(selected["acodec"], "aac")
 
 
+    def test_youtube_channel_live_skips_video_resolver(self):
+        import app.downloader.service as service
+
+        with (
+            patch.object(service.settings, "youtube_api_enabled", True),
+            patch.object(service.settings, "youtube_api_url", "https://resolver.example/api"),
+            patch.object(service.urllib.request, "urlopen", side_effect=AssertionError("channel page is not a video")),
+        ):
+            result = service._youtube_api_fallback(
+                "https://www.youtube.com/live/UCcYP83kTmE?si=test"
+            )
+        self.assertIsNone(result)
+
     def test_youtube_api_rejects_generic_json_url_without_media_signal(self):
         import app.downloader.service as service
 
