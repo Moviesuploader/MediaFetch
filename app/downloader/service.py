@@ -391,15 +391,31 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
         api_url = f"https://www.youtube.com/watch?v={video_id}"
     query = urlencode({"url": api_url})
     endpoints = [f"{base_url}?{query}"]
+    # Optional second gateway from the Desi API release post. Its published
+    # URL uses ?url=YOUR_YT_URL; normalize that template into a query safely.
+    alternate_base = settings.youtube_api_fallback_url.strip()
+    def add_gateway(gateway_base: str, target_url: str) -> None:
+        gateway_base = gateway_base.strip()
+        if not gateway_base:
+            return
+        gateway_root = gateway_base.split("?", 1)[0].rstrip("/")
+        candidate = f"{gateway_root}/?{urlencode({'url': target_url})}"
+        if candidate not in endpoints:
+            endpoints.append(candidate)
+
+    if alternate_base:
+        add_gateway(alternate_base, api_url)
     # Some API deployments resolve short/share URLs differently from the
-    # canonical YouTube watch URL. Keep the original request first, but if it
-    # returns HTTP 500 the caller can retry the same API with watch?v=<id>.
+    # canonical YouTube watch URL. Retry the canonical URL only after the
+    # first gateway(s) have had a chance.
     if video_id:
         canonical_api_url = f"https://www.youtube.com/watch?v={video_id}"
         canonical_query = urlencode({"url": canonical_api_url})
         canonical_endpoint = f"{base_url}?{canonical_query}"
         if canonical_endpoint not in endpoints:
             endpoints.append(canonical_endpoint)
+        if alternate_base:
+            add_gateway(alternate_base, canonical_api_url)
 
     direct_keys = {
         "video_url", "videoUrl", "stream_url", "streamUrl",
@@ -674,13 +690,16 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
                 "YouTube API fallback failed endpoint=%s error_type=%s error=%s",
                 endpoint, type(exc).__name__, exc,
             )
-            # Only spend another API request on a server-side 5xx. Timeouts,
-            # auth/rate-limit errors and client errors should fall through to
-            # yt-dlp instead of doubling the user's wait.
-            if endpoint != endpoints[-1] and not (
-                isinstance(exc, urllib.error.HTTPError) and exc.code >= 500
-            ):
-                break
+            # If one gateway is down, allow the alternate gateway one chance.
+            # Avoid retrying multiple URL shapes on the same failed gateway for
+            # timeouts/client errors; server errors may still justify the
+            # canonical-URL retry on the same gateway.
+            if endpoint != endpoints[-1]:
+                current_host = urlsplit(endpoint).netloc.lower()
+                next_host = urlsplit(endpoints[endpoints.index(endpoint) + 1]).netloc.lower()
+                is_server_error = isinstance(exc, urllib.error.HTTPError) and exc.code >= 500
+                if current_host == next_host and not is_server_error:
+                    break
     return None
 
 
