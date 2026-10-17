@@ -1716,7 +1716,8 @@ def _instagram_structured_fallback(url: str) -> tuple[dict, str, dict] | None:
             home = session.get(
                 "https://www.instagram.com/",
                 allow_redirects=True,
-                timeout=20,
+                max_redirects=5,
+                timeout=5,
                 headers={
                     "User-Agent": ua,
                     "Accept": "text/html,application/xhtml+xml",
@@ -1731,7 +1732,7 @@ def _instagram_structured_fallback(url: str) -> tuple[dict, str, dict] | None:
             gql = session.post(
                 "https://www.instagram.com/graphql/query",
                 allow_redirects=False,
-                timeout=25,
+                timeout=7,
                 headers={
                     "User-Agent": ua,
                     "Accept": "*/*",
