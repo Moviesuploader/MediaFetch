@@ -576,6 +576,7 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
             for item in node:
                 walk(item, inherited_height)
 
+    failed_nonserver_hosts: set[str] = set()
     for endpoint in endpoints:
         try:
             request = urllib.request.Request(
@@ -694,11 +695,15 @@ def _youtube_api_fallback(url: str) -> tuple[dict, str, dict] | None:
             # Avoid retrying multiple URL shapes on the same failed gateway for
             # timeouts/client errors; server errors may still justify the
             # canonical-URL retry on the same gateway.
+            current_host = urlsplit(endpoint).netloc.lower()
+            is_server_error = isinstance(exc, urllib.error.HTTPError) and exc.code >= 500
+            if not is_server_error:
+                failed_nonserver_hosts.add(current_host)
             if endpoint != endpoints[-1]:
-                current_host = urlsplit(endpoint).netloc.lower()
                 next_host = urlsplit(endpoints[endpoints.index(endpoint) + 1]).netloc.lower()
-                is_server_error = isinstance(exc, urllib.error.HTTPError) and exc.code >= 500
-                if current_host == next_host and not is_server_error:
+                # One failed attempt per gateway for timeout/auth/client errors;
+                # do not circle back to a host that already timed out.
+                if not is_server_error and next_host in failed_nonserver_hosts:
                     break
     return None
 
