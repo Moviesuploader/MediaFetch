@@ -257,6 +257,51 @@ class DownloaderRoutingTests(unittest.TestCase):
         self.assertTrue(info["_mediafetch_youtube_api"])
         self.assertEqual(info["formats"][0]["height"], 720)
 
+    def test_youtube_api_uses_alternate_gateway_when_primary_fails(self):
+        import socket
+        import app.downloader.service as service
+
+        class FakeResponse:
+            status = 200
+            headers = {"Content-Type": "application/json"}
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self, *args):
+                return (
+                    b'{"formats":[{"quality":"720p",'
+                    b'"url":"https://cdn.example/video-720.mp4",'
+                    b'"height":720,"vcodec":"h264","acodec":"aac"}]}'
+                )
+
+        def fake_urlopen(request, **kwargs):
+            if "samra-youtube-api.krishnalucky193.workers.dev" in request.full_url:
+                raise socket.timeout("primary gateway timed out")
+            if "samra-youtube-api.antideploy.com" in request.full_url:
+                return FakeResponse()
+            raise AssertionError(f"unexpected API endpoint: {request.full_url}")
+
+        with (
+            patch.object(service.settings, "youtube_api_enabled", True),
+            patch.object(
+                service.settings, "youtube_api_url",
+                "https://samra-youtube-api.krishnalucky193.workers.dev",
+            ),
+            patch.object(
+                service.settings, "youtube_api_fallback_url",
+                "https://samra-youtube-api.antideploy.com/",
+            ),
+            patch.object(service.urllib.request, "urlopen", side_effect=fake_urlopen),
+        ):
+            result = service._youtube_api_fallback("https://youtu.be/dQw4w9WgXcQ")
+
+        self.assertIsNotNone(result)
+        info, _, _ = result
+        self.assertTrue(info["_mediafetch_youtube_api"])
+        self.assertEqual(info["formats"][0]["height"], 720)
+        self.assertIn("video-720.mp4", info["formats"][0]["url"])
+
     def test_youtube_api_rejects_generic_json_url_without_media_signal(self):
         import app.downloader.service as service
 
