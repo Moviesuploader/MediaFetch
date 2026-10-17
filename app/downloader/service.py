@@ -1570,6 +1570,31 @@ def _meta_public_page_fallback(url: str) -> tuple[dict, str, dict] | None:
 
 
 
+def _best_instagram_candidate(
+    items: list | None,
+    expected_ratio: float | None = None,
+) -> dict | None:
+    valid = [
+        item for item in (items or [])
+        if isinstance(item, dict)
+        and isinstance(item.get("url"), str)
+        and item["url"].startswith(("http://", "https://"))
+    ]
+
+    def score(item: dict) -> tuple[float, int, int]:
+        width = int(item.get("width") or 0)
+        height = int(item.get("height") or 0)
+        area = width * height
+        ratio = width / height if width > 0 and height > 0 else 0.0
+        # Prefer the rendition closest to the source's portrait/landscape
+        # ratio before comparing pixel area; this avoids square-cropped
+        # candidates winning over an available portrait original.
+        ratio_score = -abs(ratio - expected_ratio) if expected_ratio and ratio else 0.0
+        return (ratio_score, area, width + height)
+
+    return max(valid, key=score, default=None)
+
+
 def _instagram_structured_fallback(url: str) -> tuple[dict, str, dict] | None:
     """Resolve public Instagram posts with the current web GraphQL document.
 
@@ -1600,27 +1625,6 @@ def _instagram_structured_fallback(url: str) -> tuple[dict, str, dict] | None:
         except Exception as exc:
             logger.warning("Instagram structured cookie load failed error_type=%s", type(exc).__name__)
 
-    def best(items: list | None, expected_ratio: float | None = None) -> dict | None:
-        valid = [
-            item for item in (items or [])
-            if isinstance(item, dict)
-            and isinstance(item.get("url"), str)
-            and item["url"].startswith(("http://", "https://"))
-        ]
-
-        def image_score(item: dict) -> tuple[float, int, int]:
-            width = int(item.get("width") or 0)
-            height = int(item.get("height") or 0)
-            area = width * height
-            ratio = width / height if width > 0 and height > 0 else 0.0
-            # Prefer the rendition closest to the source's portrait/landscape
-            # ratio before comparing pixel area; this avoids square-cropped
-            # candidates winning over an available portrait original.
-            ratio_score = -abs(ratio - expected_ratio) if expected_ratio and ratio else 0.0
-            return (ratio_score, area, width + height)
-
-        return max(valid, key=image_score, default=None)
-
     def build(post: dict) -> tuple[dict, str, dict] | None:
         caption = post.get("caption")
         title = (
@@ -1634,7 +1638,7 @@ def _instagram_structured_fallback(url: str) -> tuple[dict, str, dict] | None:
         for index, item in enumerate(media_items, 1):
             if not isinstance(item, dict):
                 continue
-            video = best(item.get("video_versions"))
+            video = _best_instagram_candidate(item.get("video_versions"))
             versions = item.get("image_versions2")
             original_width = int(item.get("original_width") or 0)
             original_height = int(item.get("original_height") or 0)
@@ -1643,7 +1647,7 @@ def _instagram_structured_fallback(url: str) -> tuple[dict, str, dict] | None:
                 if original_width > 0 and original_height > 0
                 else None
             )
-            image = best(
+            image = _best_instagram_candidate(
                 versions.get("candidates") if isinstance(versions, dict) else None,
                 expected_ratio=original_ratio,
             )
