@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     # Optional external YouTube direct-stream fallback (Desi API).
     youtube_api_enabled: bool = True
     youtube_api_url: str = "https://samra-youtube-api.krishnalucky193.workers.dev"
+    youtube_api_fallback_url: str = "https://samra-youtube-api.antideploy.com/"
     youtube_api_timeout_seconds: int = 7
 
     # Operational Telegram channels. Accept numeric chat IDs or @usernames.
