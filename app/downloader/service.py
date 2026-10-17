@@ -850,18 +850,21 @@ def _facebook_curl_photo_fallback(url: str) -> tuple[dict, str, dict] | None:
     if curl_requests is None:
         return None
     cookie_file = _materialize_facebook_cookie_file()
-    if not cookie_file or not cookie_file.is_file():
-        return None
+    cookies: dict[str, str] = {}
+    if cookie_file and cookie_file.is_file():
+        try:
+            jar = http.cookiejar.MozillaCookieJar(str(cookie_file))
+            jar.load(ignore_discard=True, ignore_expires=True)
+            cookies = {cookie.name: cookie.value for cookie in jar}
+        except Exception as exc:
+            logger.warning("Facebook photo fallback cookie load failed error_type=%s", type(exc).__name__)
 
     try:
-        jar = http.cookiejar.MozillaCookieJar(str(cookie_file))
-        jar.load(ignore_discard=True, ignore_expires=True)
-        cookies = {cookie.name: cookie.value for cookie in jar}
         response = curl_requests.get(
             url,
             impersonate="chrome",
             allow_redirects=True,
-            timeout=12,
+            timeout=7,
             cookies=cookies,
             headers={
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -1252,7 +1255,7 @@ def _facebook_video_page_fallback(url: str) -> tuple[dict, str, dict] | None:
             url,
             impersonate="chrome",
             allow_redirects=True,
-            timeout=20,
+            timeout=8,
             cookies=cookies,
             headers={
                 "Accept": (
@@ -1597,21 +1600,26 @@ def _instagram_structured_fallback(url: str) -> tuple[dict, str, dict] | None:
         except Exception as exc:
             logger.warning("Instagram structured cookie load failed error_type=%s", type(exc).__name__)
 
-    def best(items: list | None) -> dict | None:
+    def best(items: list | None, expected_ratio: float | None = None) -> dict | None:
         valid = [
             item for item in (items or [])
             if isinstance(item, dict)
             and isinstance(item.get("url"), str)
             and item["url"].startswith(("http://", "https://"))
         ]
-        return max(
-            valid,
-            key=lambda item: (
-                int(item.get("width") or 0) * int(item.get("height") or 0),
-                int(item.get("width") or 0) + int(item.get("height") or 0),
-            ),
-            default=None,
-        )
+
+        def image_score(item: dict) -> tuple[float, int, int]:
+            width = int(item.get("width") or 0)
+            height = int(item.get("height") or 0)
+            area = width * height
+            ratio = width / height if width > 0 and height > 0 else 0.0
+            # Prefer the rendition closest to the source's portrait/landscape
+            # ratio before comparing pixel area; this avoids square-cropped
+            # candidates winning over an available portrait original.
+            ratio_score = -abs(ratio - expected_ratio) if expected_ratio and ratio else 0.0
+            return (ratio_score, area, width + height)
+
+        return max(valid, key=image_score, default=None)
 
     def build(post: dict) -> tuple[dict, str, dict] | None:
         caption = post.get("caption")
@@ -1628,7 +1636,17 @@ def _instagram_structured_fallback(url: str) -> tuple[dict, str, dict] | None:
                 continue
             video = best(item.get("video_versions"))
             versions = item.get("image_versions2")
-            image = best(versions.get("candidates") if isinstance(versions, dict) else None)
+            original_width = int(item.get("original_width") or 0)
+            original_height = int(item.get("original_height") or 0)
+            original_ratio = (
+                original_width / original_height
+                if original_width > 0 and original_height > 0
+                else None
+            )
+            image = best(
+                versions.get("candidates") if isinstance(versions, dict) else None,
+                expected_ratio=original_ratio,
+            )
             media_headers = {"User-Agent": ua, "Referer": canonical_url}
             child_id = str(item.get("pk") or item.get("id") or item.get("code") or f"{shortcode}_{index}")
 
@@ -1698,10 +1716,16 @@ def _instagram_structured_fallback(url: str) -> tuple[dict, str, dict] | None:
 
     # Instaloader currently obtains Post metadata with this doc_id and reads
     # data.xdt_api__v1__media__shortcode__web_info.items[0].
+    # This resolver runs before yt-dlp; keep it short so a slow GraphQL
+    # bootstrap cannot consume the Telegram inspection window.
+    request_deadline = time.monotonic() + 9
     attempts = [cookies] if cookies.get("sessionid") else []
     attempts.append({})
     seen: set[tuple[tuple[str, str], ...]] = set()
     for request_cookies in attempts:
+        remaining = request_deadline - time.monotonic()
+        if remaining < 1.5:
+            break
         fingerprint = tuple(sorted(request_cookies.items()))
         if fingerprint in seen:
             continue
@@ -1789,7 +1813,7 @@ def _instagram_web_fallback(url: str) -> tuple[dict, str, dict] | None:
                 "Accept": "text/html,application/xhtml+xml",
             },
         )
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=8) as response:
             html = response.read(6 * 1024 * 1024).decode("utf-8", "replace")
         parser = _OpenGraphParser()
         parser.feed(html)
@@ -3021,10 +3045,16 @@ def _reddit_json_fallback(url: str) -> tuple[dict, str, dict] | None:
 
 def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
     last_error: Exception | None = None
+    platform = _platform_from_url(url)
+    if platform == "youtube":
+        extraction_budget = max(20, min(settings.extraction_timeout_seconds, 30))
+    elif platform in {"instagram", "facebook"}:
+        # URL variants otherwise multiply a full socket timeout for every host.
+        extraction_budget = 20
+    else:
+        extraction_budget = None
     extraction_deadline = (
-        time.monotonic() + max(20, min(settings.extraction_timeout_seconds, 30))
-        if _platform_from_url(url) == "youtube"
-        else None
+        time.monotonic() + extraction_budget if extraction_budget is not None else None
     )
 
     # Threads: use the crawler/data-sjs resolver first. The installed
@@ -3124,7 +3154,10 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
                 )
 
     if _platform_from_url(url) == "facebook":
+        fallback_deadline = time.monotonic() + 12
         for candidate in _url_variants(url):
+            if time.monotonic() >= fallback_deadline:
+                break
             fallback = _facebook_video_page_fallback(candidate)
             if fallback:
                 logger.info("Facebook public video fallback succeeded url=%s", candidate)
@@ -3138,12 +3171,14 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
                 marker in candidate_path
                 for marker in ("/share/v/", "/share/r/", "/reel/", "/videos/")
             )
-            if not video_intent:
+            if not video_intent and time.monotonic() < fallback_deadline:
                 photo_fallback = _facebook_curl_photo_fallback(candidate)
                 if photo_fallback:
                     logger.info("Facebook browser photo fallback succeeded url=%s", candidate)
                     return photo_fallback
 
+                if time.monotonic() >= fallback_deadline:
+                    break
                 authenticated_photo = _facebook_authenticated_photo_fallback(candidate)
                 if authenticated_photo:
                     logger.info("Facebook authenticated photo fallback succeeded url=%s", candidate)
@@ -3155,7 +3190,10 @@ def _extract_with_fallback(url: str) -> tuple[dict, str, dict]:
             return public_fallback
 
     if _platform_from_url(url) == "instagram":
+        fallback_deadline = time.monotonic() + 8
         for candidate in _url_variants(url):
+            if time.monotonic() >= fallback_deadline:
+                break
             fallback = _instagram_web_fallback(candidate)
             if fallback:
                 logger.info("Instagram public-page fallback succeeded url=%s", candidate)
@@ -3291,7 +3329,7 @@ def _download_image(url: str, target: Path, max_file_mb: int, headers: dict[str,
     request_headers = {"User-Agent": "Mozilla/5.0", **(headers or {})}
     request = urllib.request.Request(url, headers=request_headers)
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=12) as response:
             data = response.read()
             content_type = response.headers.get_content_type()
     except Exception as exc:
