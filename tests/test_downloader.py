@@ -8,6 +8,7 @@ from app.downloader.service import (
     _youtube_api_height,
     _youtube_video_id,
     _facebook_video_page_fallback,
+    _best_instagram_candidate,
     _extract_profiles,
     _extract_with_fallback,
     _platform_from_url,
@@ -62,6 +63,14 @@ class DownloaderRoutingTests(unittest.TestCase):
             profiles[-1]["extractor_args"],
             {"generic": {"impersonate": "chrome"}},
         )
+
+    def test_instagram_prefers_original_portrait_ratio_over_larger_square_crop(self):
+        candidates = [
+            {"url": "https://cdn.example/square.jpg", "width": 1200, "height": 1200},
+            {"url": "https://cdn.example/portrait.jpg", "width": 1080, "height": 1350},
+        ]
+        chosen = _best_instagram_candidate(candidates, expected_ratio=4 / 5)
+        self.assertEqual(chosen["url"], "https://cdn.example/portrait.jpg")
 
     def test_instagram_clean_url_variant(self):
         url = "https://www.instagram.com/reel/ABC123/?igsh=share-token&img_index=1"
