@@ -84,7 +84,7 @@ class DownloaderRoutingTests(unittest.TestCase):
             for profile in profiles[1:]
         ]
         self.assertTrue(
-            all(client in [["web_safari"], ["android_vr"], ["tv"]] for client in public_clients)
+            all(client in [["web_safari"], ["web_embedded"], ["android_vr"], ["tv"]] for client in public_clients)
         )
         self.assertIn(["android_vr"], public_clients)
         self.assertIn(["tv"], public_clients)
